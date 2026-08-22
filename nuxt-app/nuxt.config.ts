@@ -91,6 +91,14 @@ export default defineNuxtConfig({
     huggingFaceNamespace: process.env.HUGGINGFACE_NAMESPACE || '',
     huggingFaceBaseModelId: process.env.HUGGINGFACE_BASE_MODEL_ID || 'distilbert/distilbert-base-multilingual-cased',
     huggingFaceJobFlavor: process.env.HUGGINGFACE_JOB_FLAVOR || 'a10g-small',
+    // Server-only. The adapter remains unavailable until the owner configures
+    // this credential through the secure project settings flow.
+    autoGeoGeminiApiKey: process.env.NUXT_AUTOGEO_GEMINI_API_KEY || '',
+    // Server-only commercial provider configuration. The adapter validates an
+    // HTTPS Alibaba Cloud Model Studio compatible-mode endpoint before any call.
+    autoGeoBailianApiKey: process.env.NUXT_AUTOGEO_BAILIAN_API_KEY || '',
+    autoGeoBailianEndpoint: process.env.NUXT_AUTOGEO_BAILIAN_ENDPOINT || '',
+    autoGeoBailianModel: process.env.NUXT_AUTOGEO_BAILIAN_MODEL || 'qwen-plus',
     public: {
       discoveryStackSiteUrl: process.env.NUXT_PUBLIC_DISCOVERY_STACK_SITE_URL || process.env.NUXT_PUBLIC_SITE_URL || 'https://discoverystack.example',
     },
