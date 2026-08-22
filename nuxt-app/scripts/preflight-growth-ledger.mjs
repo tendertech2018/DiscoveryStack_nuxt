@@ -31,9 +31,7 @@ try {
   const existingTables = new Set(tables.map((row) => row.tableName))
   const hasConsentColumn = columns.length === 1
 
-  if (existingTables.size === 0 && !hasConsentColumn) {
-    console.info(JSON.stringify({ event: 'growth_ledger_migration_preflight', state: 'ready_to_migrate' }))
-  } else if (existingTables.size === growthTables.length && hasConsentColumn) {
+  if (existingTables.size === growthTables.length && hasConsentColumn) {
     const [migrations] = await connection.execute(
       "SELECT hash FROM __drizzle_migrations WHERE hash = ? LIMIT 1",
       [migrationHash],
@@ -42,6 +40,8 @@ try {
       throw new Error('Growth Ledger schema is present but migration history is missing. Refusing deployment to prevent drift.')
     }
     console.info(JSON.stringify({ event: 'growth_ledger_migration_preflight', state: 'already_migrated' }))
+  } else if (existingTables.size === 0 && !hasConsentColumn) {
+    throw new Error('Growth Ledger schema has not been migrated. Apply migration 0008_governed_growth_ledger.sql before deployment.')
   } else {
     throw new Error(`Growth Ledger schema is partial (tables=${existingTables.size}, consentColumn=${hasConsentColumn}). Refusing migration to prevent drift.`)
   }
