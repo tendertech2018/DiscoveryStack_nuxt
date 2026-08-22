@@ -3,6 +3,7 @@ import { and, eq, gt } from 'drizzle-orm'
 import { createError, getHeader, getRequestIP, type H3Event } from 'h3'
 import { getDatabase } from '../database'
 import { leads } from '../database/schema'
+import { appendGrantedGrowthConsent, canonicalGrowthWebsite } from '../growth/ledger'
 import { leadDedupeKey, type LeadInput } from './leadInput'
 
 const DEDUPE_WINDOW_MS = 15 * 60 * 1_000
@@ -33,23 +34,28 @@ export async function storeLead(event: H3Event, input: LeadInput) {
   const dedupeKey = leadDedupeKey(input)
   const fingerprint = requestFingerprint(event)
   enforceLeadRateLimit(fingerprint)
-  const since = new Date(Date.now() - DEDUPE_WINDOW_MS)
-  const existing = await database.select({ id: leads.id }).from(leads)
-    .where(and(eq(leads.dedupeKey, dedupeKey), gt(leads.createdAt, since))).limit(1)
-  if (existing.length) return { received: true, duplicate: true } as const
+  if (input.growthResearchConsent && input.website) canonicalGrowthWebsite(input.website)
+  return database.transaction(async (tx) => {
+    const since = new Date(Date.now() - DEDUPE_WINDOW_MS)
+    const existing = await tx.select({ id: leads.id }).from(leads)
+      .where(and(eq(leads.dedupeKey, dedupeKey), gt(leads.createdAt, since))).limit(1)
+    if (existing.length) return { received: true, duplicate: true } as const
 
-  await database.insert(leads).values({
-    name: input.name,
-    email: input.email,
-    company: input.company,
-    website: input.website || null,
-    packageInterest: input.packageInterest,
-    language: input.language,
-    message: input.message || null,
-    privacyConsent: input.privacyConsent,
-    recontactConsent: input.recontactConsent,
-    dedupeKey,
-    requestFingerprint: fingerprint,
+    const created = await tx.insert(leads).values({
+      name: input.name,
+      email: input.email,
+      company: input.company,
+      website: input.website || null,
+      packageInterest: input.packageInterest,
+      language: input.language,
+      message: input.message || null,
+      privacyConsent: input.privacyConsent,
+      recontactConsent: input.recontactConsent,
+      growthResearchConsent: input.growthResearchConsent,
+      dedupeKey,
+      requestFingerprint: fingerprint,
+    })
+    if (input.growthResearchConsent) await appendGrantedGrowthConsent({ leadId: Number(created[0].insertId), website: input.website || undefined, locale: input.language, requestFingerprintHash: fingerprint }, tx)
+    return { received: true, duplicate: false } as const
   })
-  return { received: true, duplicate: false } as const
 }

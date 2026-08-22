@@ -63,6 +63,9 @@ export default defineNuxtConfig({
       '/en/**': { prerender: true },
       '/zh-hant/**': { prerender: true },
     } : {}),
+    '/growth-lab': { prerender: false, headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive' } },
+    '/en/growth-lab': { prerender: false, headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive' } },
+    '/zh-hant/growth-lab': { prerender: false, headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive' } },
   },
   i18n: {
     strategy: 'prefix',

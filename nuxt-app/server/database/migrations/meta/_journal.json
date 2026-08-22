@@ -57,6 +57,13 @@
       "when": 1786896778572,
       "tag": "0007_complex_justice",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1787402148251,
+      "tag": "0008_governed_growth_ledger",
+      "breakpoints": true
     }
   ]
 }
