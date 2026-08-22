@@ -27,6 +27,14 @@ const copy = computed(() => isZh.value ? {
   options: { unsure: 'I am still mapping it', discover: 'Help demand find us', clarify: 'Make the service easier to understand', grow: 'Find the next-step friction' },
 })
 
+function failureReference(error: unknown) {
+  const record = error as { data?: { data?: { code?: unknown, requestId?: unknown }, code?: unknown, requestId?: unknown } }
+  const details = record?.data?.data ?? record?.data
+  const code = typeof details?.code === 'string' ? details.code : ''
+  const requestId = typeof details?.requestId === 'string' ? details.requestId : ''
+  return code ? `${code}${requestId ? ` · ${requestId}` : ''}` : ''
+}
+
 async function submit() {
   status.value = 'submitting'
   feedback.value = ''
@@ -34,15 +42,20 @@ async function submit() {
     await $fetch('/api/leads', { method: 'POST', body: { ...form, language: props.locale } })
     status.value = 'success'
     feedback.value = copy.value.success
-  } catch {
+  } catch (error) {
     status.value = 'error'
-    feedback.value = copy.value.error
+    const reference = failureReference(error)
+    feedback.value = reference ? `${copy.value.error} (${reference})` : copy.value.error
   }
 }
+
+onMounted(() => {
+  if (window.location.hash === '#fit') requestAnimationFrame(() => document.getElementById('fit')?.scrollIntoView({ block: 'start' }))
+})
 </script>
 
 <template>
-  <section id="fit-review" class="fit-review" aria-labelledby="fit-review-title">
+  <section id="fit" class="fit-review" aria-labelledby="fit-review-title">
     <div class="fit-review-intro">
       <p class="eyebrow">{{ copy.eyebrow }}</p>
       <h2 id="fit-review-title">{{ copy.title }}</h2>

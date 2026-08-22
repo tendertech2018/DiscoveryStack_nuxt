@@ -13,6 +13,8 @@
     "typecheck": "nuxt typecheck",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:preflight-growth-ledger": "node scripts/preflight-growth-ledger.mjs",
     "prepare": "nuxt prepare"
   },
   "dependencies": {

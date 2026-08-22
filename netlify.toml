@@ -1,7 +1,6 @@
 [build]
 base = "nuxt-app"
-command = "pnpm build"
-publish = "dist"
+command = "pnpm db:preflight-growth-ledger && pnpm build"
 
 [build.environment]
 NODE_VERSION = "22"

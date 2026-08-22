@@ -120,7 +120,7 @@ defineExpose({ openDock })
       :aria-expanded="expanded"
       :aria-controls="panelId"
       :aria-label="`AI QA — ${copy.launcher}`"
-      @click="toggleDock"
+      @click="openDock"
     >
       <span class="qa-assistant-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
@@ -136,7 +136,7 @@ defineExpose({ openDock })
       <span class="qa-launcher-arrow" aria-hidden="true">↗</span>
     </button>
 
-    <section :id="panelId" class="qa-panel" :aria-hidden="!expanded" :aria-labelledby="titleId">
+    <section :id="panelId" class="qa-panel" :class="{ 'is-visible': expanded || isInline }" :aria-hidden="!expanded" :aria-labelledby="titleId">
       <div class="ai-qa-topline">
         <p :id="titleId">{{ copy.scope }}</p>
         <span v-if="isInline" class="qa-availability">{{ isZh ? '可直接提問' : 'Ready for a question' }}</span>
