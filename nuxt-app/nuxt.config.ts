@@ -42,6 +42,7 @@ export default defineNuxtConfig({
     },
   },
   nitro: {
+    preset: process.env.NITRO_PRESET || 'netlify',
     prerender: {
       // Nuxt always invokes the Nitro prerender runner after a production build.
       // With an empty route set and crawlLinks disabled it returns immediately,
