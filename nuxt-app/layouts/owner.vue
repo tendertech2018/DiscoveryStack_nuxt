@@ -36,6 +36,12 @@ useHead({ htmlAttrs: { lang: 'zh-Hant', dir: 'ltr' } })
   color: #eff3f7;
 }
 
+#owner-workbench {
+  min-height: calc(100vh - 4.5rem);
+  background: #f4f6f8;
+  color: #17253d;
+}
+
 .owner-layout__header {
   position: sticky;
   top: 0;
