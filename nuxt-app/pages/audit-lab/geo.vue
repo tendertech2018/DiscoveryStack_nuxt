@@ -56,7 +56,7 @@ function fallbackLabel(reason?: Result['candidate']['provenance']['fallbackReaso
   return labels[reason || 'bailian-not-configured']
 }
 
-definePageMeta({ i18n: false })
+definePageMeta({ i18n: false, layout: 'owner' })
 useHead({ title: '私有 GEO Workbench · DiscoveryStack', meta: [{ name: 'robots', content: 'noindex, nofollow, noarchive' }] })
 
 async function runOptimization() {

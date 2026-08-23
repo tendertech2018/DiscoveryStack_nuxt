@@ -72,7 +72,7 @@ const mlMessage = ref('')
 const ingestionForm = reactive({ sourceId: 0, requestedUrl: '' })
 const bgeJobIds = ref<number[]>([])
 
-definePageMeta({ i18n: false })
+definePageMeta({ i18n: false, layout: 'owner' })
 useHead({ title: '私有稽核實驗室 · 發現方式Stack', meta: [{ name: 'robots', content: 'noindex, nofollow, noarchive' }] })
 
 async function loadOverview() {

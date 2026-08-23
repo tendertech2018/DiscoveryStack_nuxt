@@ -32,7 +32,7 @@ const headLabels: Record<string, string> = {
 const stageLabels: Record<string, string> = { discovery: '探索', understanding: '理解', response: '回應', progression: '推進', conversion: '轉換' }
 const stages = ['discovery', 'understanding', 'response', 'progression', 'conversion']
 
-definePageMeta({ i18n: false })
+definePageMeta({ i18n: false, layout: 'owner' })
 useHead({ title: '101 筆訓練報告 · DiscoveryStack', meta: [{ name: 'robots', content: 'noindex, nofollow, noarchive' }] })
 
 function formatScore(value: number | null) { return value === null ? '—' : value.toFixed(4) }
