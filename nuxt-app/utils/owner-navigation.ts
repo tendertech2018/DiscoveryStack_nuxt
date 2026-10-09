@@ -48,6 +48,7 @@ export const OWNER_NAVIGATION_GROUPS: OwnerNavigationGroup[] = [
     label: '系統與設定',
     advanced: false,
     items: [
+      { id: 'operations', label: '營運狀態', description: '檢查服務、資料庫版本與背景工作', to: '/audit-lab/operations' },
       { id: 'email-delivery', label: '郵件紀錄', description: '查看系統寄出的郵件紀錄', to: '/audit-lab/email-delivery' },
     ],
   },

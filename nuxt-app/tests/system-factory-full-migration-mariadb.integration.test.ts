@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import * as schema from '../server/database/schema'
 import { DrizzleModelOpsRepository } from '../server/geo-outcome-model/modelops-repository-drizzle'
 import type { ModelOpsCycle, ModelOpsPolicy } from '../server/geo-outcome-model/modelops-types'
+import { assessMigrationLedger, readDatabaseProbeEvidence } from '../server/operations/readiness'
 
 const enabled = process.env.DS_RUN_SYSTEM_FACTORY_FULL_MIGRATION_DB_INTEGRATION === '1'
 const databaseUrl = process.env.DATABASE_URL || ''
@@ -94,6 +95,18 @@ suite('full-chain disposable MariaDB bootstrap', () => {
     expect(after[0]).toEqual(before[0])
     expect(Number(after[0]?.count)).toBe(expectedMigrationCount)
   }, 30_000)
+
+  it('matches the bundled readiness manifest against every real Drizzle ledger row', async () => {
+    const evidence = await readDatabaseProbeEvidence(5_000)
+    expect(evidence.kind).toBe('ok')
+    if (evidence.kind !== 'ok') return
+    expect(assessMigrationLedger(evidence.ledgerRows)).toMatchObject({
+      status: 'exact',
+      reasonCode: null,
+      expectedCount: expectedMigrationCount,
+      observedCount: expectedMigrationCount,
+    })
+  }, 10_000)
 
   it('enforces durable ModelOps lease fencing under concurrent MariaDB takeover', async () => {
     await connection.query("INSERT INTO users (id,openId,role) VALUES (9001,'modelops-db-owner','admin')")

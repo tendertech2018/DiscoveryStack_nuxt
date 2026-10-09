@@ -1,10 +1,10 @@
-import sharp from 'sharp'
+import sharp, { type Metadata } from 'sharp'
 import { createError } from 'h3'
 import { hashBytes, MEDIA_LIMITS } from './validation'
 import type { MediaImageProcessor, MediaInspection, MediaTransformation, MediaVariantOutput } from './types'
 
 const FORMAT_MIME: Record<string, MediaInspection['mime']> = { jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', avif: 'image/avif' }
-function assertMetadata(metadata: sharp.Metadata): MediaInspection {
+function assertMetadata(metadata: Metadata): MediaInspection {
   const mime = metadata.format ? FORMAT_MIME[metadata.format] : undefined; const oriented = metadata.autoOrient || metadata; const width = Number(oriented.width); const height = Number(oriented.height); const frameCount = Number(metadata.pages || 1)
   if (!mime || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width > MEDIA_LIMITS.maxDimension || height > MEDIA_LIMITS.maxDimension || width * height > MEDIA_LIMITS.maxPixels || !Number.isSafeInteger(frameCount) || frameCount < 1 || frameCount > 100) throw createError({ statusCode: 422, statusMessage: 'Image codec metadata is unsupported or exceeds decode limits.' })
   return { mime, width, height, frameCount, orientation: metadata.orientation || null, hasExif: Boolean(metadata.exif), hasGps: Boolean(metadata.exif && Buffer.from(metadata.exif).includes(Buffer.from('GPS'))) }

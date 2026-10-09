@@ -1,0 +1,6 @@
+diff --git a/dist/chunks/module-main.mjs b/dist/chunks/module-main.mjs
+--- a/dist/chunks/module-main.mjs
++++ b/dist/chunks/module-main.mjs
+@@ -16,1 +16,1 @@
+-import Git from 'simple-git';
++import { simpleGit as Git } from 'simple-git';

@@ -1,33 +1,15 @@
 import { fileURLToPath } from 'node:url'
+import { getOperationsTaskDefinitions } from './server/operations/task-catalog'
 
 const faviconLink = [{ rel: 'icon' as const, type: 'image/svg+xml', href: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%226%22 fill=%22%234d5dad%22/%3E%3Cpath d=%22M8 23V16h4v7H8Zm6 0V10h4v13h-4Zm6 0V6h4v17h-4Z%22 fill=%22%23f5f2eb%22/%3E%3C/svg%3E' }]
-const modelImprovementCron = process.env.MODEL_IMPROVEMENT_CRON || '0 18 * * *'
-const geoModelOpsCron = process.env.GEO_MODELOPS_CRON || '*/15 * * * *'
-const managedSiteEditorCron = process.env.MANAGED_SITE_EDITOR_CRON || '*/5 * * * *'
-const managedSiteProvisioningCron = process.env.MANAGED_SITE_PROVISIONING_CRON || '*/5 * * * *'
-const managedSiteEmailOutboxCron = process.env.MANAGED_SITE_EMAIL_OUTBOX_CRON || '*/1 * * * *'
-const systemFactoryCron = process.env.SYSTEM_FACTORY_CRON || '*/5 * * * *'
-const llmVisibilityBenchmarkCron = process.env.LLM_VISIBILITY_BENCHMARK_CRON || '*/5 * * * *'
-const contentOperationsCron = process.env.CONTENT_OPERATIONS_CRON || '*/15 * * * *'
-const contentOperationsExecutionCron = process.env.CONTENT_OPERATIONS_EXECUTION_CRON || '*/5 * * * *'
-const contentOperationsMeasurementCron = process.env.CONTENT_OPERATIONS_MEASUREMENT_CRON || '*/30 * * * *'
-
 // Several jobs intentionally share a cadence. Accumulate them instead of overwriting cron keys.
 const scheduledTasks: Record<string, string[]> = {}
-for (const [cron, tasks] of [
-  [modelImprovementCron, ['model-improvement:collect']],
-  [geoModelOpsCron, ['content-operations:geo-modelops-tick']],
-  [managedSiteEditorCron, ['managed-sites:editor-tick']],
-  [managedSiteProvisioningCron, ['managed-sites:provisioning-tick']],
-  [managedSiteEmailOutboxCron, ['managed-sites:email-outbox-tick']],
-  [systemFactoryCron, ['system-factory:provisioning-tick']],
-  [llmVisibilityBenchmarkCron, ['llm-visibility:benchmark-tick']],
-  [contentOperationsCron, ['content-operations:tick']],
-  [contentOperationsExecutionCron, ['content-operations:execution-tick']],
-  [contentOperationsMeasurementCron, ['content-operations:measurement-tick']],
-  ['*/5 * * * *', ['weekly-content:tick']],
-  ['*/5 * * * *', ['learning-loop:tick']],
-] as const) (scheduledTasks[cron] ||= []).push(...tasks)
+const operationsTaskDefinitions = getOperationsTaskDefinitions(process.env)
+for (const task of operationsTaskDefinitions) (scheduledTasks[task.cron] ||= []).push(task.name)
+const nitroTasks = Object.fromEntries(operationsTaskDefinitions.map(task => [
+  task.name,
+  { handler: fileURLToPath(new URL(task.handlerPath, import.meta.url)) },
+]))
 
 export default defineNuxtConfig({
   compatibilityDate: '2026-08-16',
@@ -53,16 +35,8 @@ export default defineNuxtConfig({
   },
   nitro: {
     experimental: { tasks: true },
-    // Nitro keys tasks by file path, not defineTask.meta.name. Explicitly bind the
-    // existing flat handlers to their scheduled names: https://nitro.build/docs/tasks
-    tasks: {
-      'content-operations:tick': { handler: fileURLToPath(new URL('./server/tasks/content-operations-tick.ts', import.meta.url)) },
-      'content-operations:execution-tick': { handler: fileURLToPath(new URL('./server/tasks/content-operations-execution-tick.ts', import.meta.url)) },
-      'llm-visibility:benchmark-tick': { handler: fileURLToPath(new URL('./server/tasks/llm-visibility-benchmark-tick.ts', import.meta.url)) },
-      'weekly-content:tick': { handler: fileURLToPath(new URL('./server/tasks/weekly-content-tick.ts', import.meta.url)) },
-      'learning-loop:tick': { handler: fileURLToPath(new URL('./server/tasks/learning-loop-tick.ts', import.meta.url)) },
-      'managed-sites:email-outbox-tick': { handler: fileURLToPath(new URL('./server/tasks/managed-site-email-outbox-tick.ts', import.meta.url)) },
-    },
+    // Bind every operations task explicitly so task identity cannot drift with file layout.
+    tasks: nitroTasks,
     scheduledTasks,
   },
   routeRules: {
@@ -86,6 +60,10 @@ export default defineNuxtConfig({
     '/weekly-content/connect/workbench': { headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'private, no-store, max-age=0', 'Referrer-Policy': 'no-referrer' } },
     '/weekly-content/workbench': { headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'private, no-store, max-age=0', 'Referrer-Policy': 'no-referrer' } },
     '/weekly-content/review/**': { headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'private, no-store, max-age=0', 'Referrer-Policy': 'no-referrer' } },
+    '/health': { headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store, max-age=0' } },
+    '/ready': { headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store, max-age=0' } },
+    '/api/health': { headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store, max-age=0' } },
+    '/api/ready': { headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store, max-age=0' } },
     '/api/**': { headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive' } },
   },
   runtimeConfig: {
@@ -97,6 +75,8 @@ export default defineNuxtConfig({
     discoveryStackOauthAllowedOrigin: process.env.NUXT_DISCOVERY_STACK_OAUTH_ALLOWED_ORIGIN || process.env.OAUTH_ALLOWED_ORIGIN || '',
     sessionSecret: process.env.JWT_SECRET || '',
     ownerOpenId: process.env.OWNER_OPEN_ID || '',
+    operationsBuildCommit: process.env.NUXT_OPERATIONS_BUILD_COMMIT || process.env.DISCOVERYSTACK_BUILD_COMMIT || process.env.RENDER_GIT_COMMIT || process.env.SOURCE_VERSION || process.env.GITHUB_SHA || '',
+    operationsTaskScheduleSnapshot: Object.fromEntries(operationsTaskDefinitions.map(task => [task.name, task.cron])),
     firecrawlApiKey: process.env.FIRECRAWL_API_KEY || '',
     firecrawlApiBaseUrl: process.env.FIRECRAWL_API_BASE_URL || 'https://api.firecrawl.dev/v2',
     huggingFaceApiToken: process.env.HUGGINGFACE_API_TOKEN || '',

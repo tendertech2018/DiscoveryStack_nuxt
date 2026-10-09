@@ -1,6 +1,7 @@
 import { resolveControlledOwnerDatabaseUserId } from '../../audit/repository'
 import { runMeasurementCollectionTick } from '../../measurement-collection'
 import { runInterventionLoopTickSafely } from '../../intervention-loop'
+import { runOperationsTask } from '../../operations/task-heartbeats'
 
 export default defineTask({
   meta: {
@@ -8,6 +9,7 @@ export default defineTask({
     description: 'Claim and process at most 50 owner-scoped publication measurement runs with bounded leases and retries.',
   },
   async run({ payload }) {
+    return runOperationsTask('content-operations:measurement-tick', async () => {
     const config = useRuntimeConfig()
     const ownerUserId = await resolveControlledOwnerDatabaseUserId(String(config.ownerOpenId || process.env.OWNER_OPEN_ID || ''))
     const requested = payload && typeof payload === 'object' && 'maxRuns' in payload ? Number((payload as { maxRuns?: unknown }).maxRuns) : 50
@@ -15,5 +17,6 @@ export default defineTask({
     const result = await runMeasurementCollectionTick(ownerUserId, { maxRuns })
     const interventionLoop = await runInterventionLoopTickSafely(ownerUserId)
     return { result, interventionLoop, ownerUserId, limitations: ['task invocation is explicit; Nitro import/build does not execute the tick'] }
+    })
   },
 })

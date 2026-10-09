@@ -7,6 +7,8 @@ import { parseManagedSiteInternalBrokerConfiguration } from './live-connectors/i
 import { parseManagedSiteCredentialRegistryForTests } from './live-connectors/provider-registry'
 import { managedSiteAllowedProviderOrigins } from './live-connectors/provider-verifiers'
 import type { ManagedSiteProviderReadiness } from './live-connectors/types'
+import { isStrongSessionSecret } from '../utils/auth'
+import { isStrongSimpleLoginPassword } from '../utils/ownerSimpleLogin'
 
 type Environment = Record<string, string | undefined>
 export type SetupCheck = {
@@ -52,13 +54,16 @@ export function getDiscoveryStackSetupReadiness(input: {
   try { const url = new URL(env.DATABASE_URL || ''); databaseValid = url.protocol === 'mysql:' && Boolean(url.hostname && url.pathname.length > 1) } catch { /* no values in errors */ }
   add('database', '資料庫連線設定', ['DATABASE_URL'], databaseValid, '在後台服務設定 MySQL/TiDB 連線。連線設定存在仍需完成 migration 與交易驗收。')
   const session = String(runtimeConfig.sessionSecret || env.NUXT_SESSION_SECRET || env.JWT_SECRET || '')
-  checks.push({ id: 'session', label: '登入簽章密鑰', required: true, settings: ['NUXT_SESSION_SECRET 或 JWT_SECRET'], status: !session ? 'missing' : Buffer.byteLength(session) < 32 ? 'invalid' : 'configured', action: '使用至少 32 bytes 的獨立隨機密鑰，存放在後台服務 Secrets。' })
+  checks.push({ id: 'session', label: '登入簽章密鑰', required: true, settings: ['NUXT_SESSION_SECRET 或 JWT_SECRET'], status: !session ? 'missing' : !isStrongSessionSecret(session) ? 'invalid' : 'configured', action: '使用至少 32 bytes 的獨立隨機密鑰，存放在後台服務 Secrets。' })
   add('owner', '平台擁有人', ['OWNER_OPEN_ID'], Boolean(env.OWNER_OPEN_ID?.trim()), '設定 OWNER_OPEN_ID，並確認資料庫中對應使用者具備 admin 權限。')
   const simplePassword = env.OWNER_SIMPLE_LOGIN_PASSWORD || ''
   const oauthOrigin = String(runtimeConfig.discoveryStackOauthAllowedOrigin || env.NUXT_DISCOVERY_STACK_OAUTH_ALLOWED_ORIGIN || env.OAUTH_ALLOWED_ORIGIN || '')
   const oauthConfigured = [runtimeConfig.oauthServerUrl || env.NUXT_OAUTH_SERVER_URL || env.OAUTH_SERVER_URL, runtimeConfig.oauthPortalUrl || env.NUXT_OAUTH_PORTAL_URL || env.VITE_OAUTH_PORTAL_URL, runtimeConfig.oauthAppId || env.NUXT_OAUTH_APP_ID || env.VITE_APP_ID].every(value => typeof value === 'string' && Boolean(value.trim()))
     && httpsOrigin(oauthOrigin) && oauthOrigin.replace(/\/$/u, '') === (env.NUXT_DISCOVERYSTACK_PRIVATE_ORIGIN || '').replace(/\/$/u, '')
-  checks.push({ id: 'owner_login', label: '擁有人登入方式', required: true, settings: ['OWNER_SIMPLE_LOGIN_PASSWORD 或 OAuth 設定', 'OAuth：NUXT_DISCOVERY_STACK_OAUTH_ALLOWED_ORIGIN'], status: simplePassword ? simplePassword.length >= 16 ? 'configured' : 'invalid' : oauthConfigured ? 'configured' : 'missing', action: 'OAuth 必須設定服務網址、portal、app ID 與同一後台的 allowed origin；使用密碼登入時請設定至少 16 個字元的強密碼。' })
+  const simpleLoginConfigured = env.OWNER_SIMPLE_LOGIN_ENABLED === 'true' && isStrongSimpleLoginPassword(simplePassword) && simplePassword !== session
+    && simplePassword !== (env.NUXT_PROVIDER_VAULT_KEY || '')
+    && Boolean((env.NUXT_OWNER_OPEN_ID || env.OWNER_OPEN_ID || '').trim()) && httpsOrigin(env.NUXT_DISCOVERYSTACK_PRIVATE_ORIGIN)
+  checks.push({ id: 'owner_login', label: '擁有人登入方式', required: true, settings: ['OWNER_SIMPLE_LOGIN_ENABLED', 'OWNER_SIMPLE_LOGIN_PASSWORD 或 OAuth 設定', 'OAuth：NUXT_DISCOVERY_STACK_OAUTH_ALLOWED_ORIGIN'], status: simpleLoginConfigured || oauthConfigured ? 'configured' : simplePassword ? 'invalid' : 'missing', action: 'OAuth 必須設定服務網址、portal、app ID 與同一後台的 allowed origin；臨時密碼登入需明確啟用、32 bytes 獨立強密碼與既有 admin 身分，不能自動升權。' })
   const email = managedSiteEmailReadinessFromEnv(env)
   checks.push({ id: 'email', label: 'Resend 系統寄信', required: true, settings: ['NUXT_MANAGED_SITE_EMAIL_API_KEY', 'NUXT_MANAGED_SITE_EMAIL_FROM', 'DISCOVERYSTACK_MANAGED_SITE_ALLOWED_PROVIDER_ORIGINS'], status: email.status, action: '驗證寄件網域後設定 Resend API key 和寄件人，將 https://api.resend.com 加入 provider allowlist。完成後實測邀請、登入信與表單通知。' })
   const emailOutbox = managedSiteEmailOutboxReadinessFromEnv(env)
