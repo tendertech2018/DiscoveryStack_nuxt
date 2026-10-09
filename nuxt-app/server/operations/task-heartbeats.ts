@@ -32,6 +32,15 @@ const heartbeats = registry.heartbeats
 
 const FAILURE_STATUSES = new Set(['blocked', 'deferred', 'error', 'failed', 'failure', 'invalid_budget', 'not_configured', 'owner_not_configured', 'owner_unavailable', 'unconfigured'])
 
+class OperationsTaskError extends Error {
+  readonly code = 'TASK_RUN_THROWN'
+
+  constructor() {
+    super('Scheduled task failed (TASK_RUN_THROWN)')
+    this.name = 'OperationsTaskError'
+  }
+}
+
 function heartbeatFor(taskName: OperationsTaskName): MutableTaskHeartbeat {
   const existing = heartbeats.get(taskName)
   if (existing) return existing
@@ -94,9 +103,12 @@ export async function runOperationsTask<T>(
     const classified = classifyTaskOutcome(result)
     completeHeartbeat(taskName, startedAtMs, classified.outcome, classified.reasonCode, now)
     return result
-  } catch (error) {
+  } catch {
     completeHeartbeat(taskName, startedAtMs, 'failure', 'TASK_RUN_THROWN', now)
-    throw error
+    // Nitro logs rejected task errors, including enumerable fields and nested causes.
+    // Preserve failure semantics without forwarding SQL, params, provider data or secrets.
+    // Do not replay a task: an external side effect may already have completed.
+    throw new OperationsTaskError()
   }
 }
 

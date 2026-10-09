@@ -25,6 +25,8 @@ Public probes use `no-store`. They do not return database URLs, provider keys, c
 
 Task observations record starts/completions, disabled outcomes, and success/failure. `not_observed`, stale, disabled, and healthy are distinct. Records are process-local and reset on restart; one healthy replica does not prove every replica is healthy or establish exactly-once scheduling. Add external uptime/alerting and a durable single-worker/lease strategy before horizontal scheduling scale. Confirm at least one intended real execution for every enabled task after deployment.
 
+Thrown task failures are converted at the scheduler boundary to `OperationsTaskError` with the fixed code `TASK_RUN_THROWN`. Nitro's scheduler logs the task name and this sanitized error, not the original SQL, query parameters, provider payload or nested cause. The task still rejects and increments its failure heartbeat; this wrapper never retries work because an external side effect might already have completed. Individual handlers must also keep their own logging and persisted diagnostics free of sensitive data.
+
 From `nuxt-app`, run a read-only smoke test against the exact deployment:
 
 ```sh
