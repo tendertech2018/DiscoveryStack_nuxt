@@ -54,6 +54,20 @@ export type GeoRewriteProvenance = {
   providerExecution?: boolean
   workerProtocolVersion?: string
   workerSourceSha256?: string
+  boundedPreviewReceipt?: {
+    version: 'bounded-qwen-preview-v1'
+    budgetUsd: 1
+    maxEstimatedCostUsd: number
+    estimatedCostUsd: number
+    maxInputTokens: 256000
+    maxOutputTokens: 2048
+    inputUsdPerMillionTokens: 0.5
+    outputUsdPerMillionTokens: 3
+    priceCheckedAt: '2026-10-10'
+    pricingUrl: string
+    attempts: 1
+    thinking: false
+  }
 }
 
 export type GeoRewriteCandidate = {
