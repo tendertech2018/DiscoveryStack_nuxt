@@ -1,33 +1,32 @@
+import { createHash } from 'node:crypto'
 import { and, eq, gt } from 'drizzle-orm'
-import type { H3Event } from 'h3'
+import { createError, getHeader, getRequestIP, type H3Event } from 'h3'
 import { getDatabase } from '../database'
 import { leads } from '../database/schema'
 import { leadDedupeKey, modelImprovementConsentReceipt, type LeadInput } from './leadInput'
-import { createBoundedProcessRateLimiter, directPeerRequestFingerprint } from './publicRequestGuard'
+import { createProcessRequestBudget, directPeerRequestFingerprint } from './publicRequestGuard'
 
 const DEDUPE_WINDOW_MS = 15 * 60 * 1_000
 const RATE_WINDOW_MS = 60 * 60 * 1_000
-const RATE_LIMIT = 5
 const GLOBAL_RATE_LIMIT = 500
-const MAX_RATE_BUCKETS = 10_000
-const leadRateLimiter = createBoundedProcessRateLimiter({
+const hashFingerprint = (value: string) => createHash('sha256').update(value).digest('hex')
+const leadRequestBudget = createProcessRequestBudget({
   windowMs: RATE_WINDOW_MS,
-  peerLimit: RATE_LIMIT,
-  globalLimit: GLOBAL_RATE_LIMIT,
-  maxBuckets: MAX_RATE_BUCKETS,
+  limit: GLOBAL_RATE_LIMIT,
   statusMessage: 'Too many submissions. Please try again later.',
 })
 
+/** Legacy heuristic for existing managed-site consumers; not an authenticated identity. */
 export function requestFingerprint(event: H3Event) {
-  return directPeerRequestFingerprint(event, 'public-contact-v2')
+  return hashFingerprint(`${getRequestIP(event, { xForwardedFor: true }) || ''}\n${getHeader(event, 'user-agent') || ''}`)
 }
 
-export function enforceLeadRateLimit(fingerprint: string) {
-  leadRateLimiter.enforce(fingerprint)
+export function enforceLeadRequestBudget() {
+  leadRequestBudget.enforce()
 }
 
 export function resetLeadRateLimitsForTests() {
-  leadRateLimiter.resetForTests()
+  leadRequestBudget.resetForTests()
 }
 
 export async function storeLead(event: H3Event, input: LeadInput) {
@@ -35,8 +34,8 @@ export async function storeLead(event: H3Event, input: LeadInput) {
   if (!database) throw createError({ statusCode: 503, statusMessage: 'Lead capture is temporarily unavailable.' })
 
   const dedupeKey = leadDedupeKey(input)
-  const fingerprint = requestFingerprint(event)
-  enforceLeadRateLimit(fingerprint)
+  const fingerprint = directPeerRequestFingerprint(event, 'public-contact-v2')
+  enforceLeadRequestBudget()
   const since = new Date(Date.now() - DEDUPE_WINDOW_MS)
   const existing = await database.select({ id: leads.id, modelImprovementConsent: leads.modelImprovementConsent }).from(leads)
     .where(and(eq(leads.dedupeKey, dedupeKey), gt(leads.createdAt, since))).limit(1)

@@ -1,21 +1,18 @@
 import { z } from 'zod'
 import { analysePublicHomepage } from '../utils/publicSiteAnalysis'
-import { createBoundedProcessRateLimiter, directPeerRequestFingerprint, PUBLIC_REQUEST_BODY_MAX_BYTES } from '../utils/publicRequestGuard'
+import { createProcessRequestBudget, PUBLIC_REQUEST_BODY_MAX_BYTES } from '../utils/publicRequestGuard'
 import { readBoundedRequestBody } from '../utils/bounded-request-body'
 
 const inputSchema = z.object({ url: z.string().trim().url().max(2048) })
 const WINDOW_MS = 60 * 60 * 1_000
-const LIMIT = 8
-const analysisRateLimiter = createBoundedProcessRateLimiter({
+const analysisRequestBudget = createProcessRequestBudget({
   windowMs: WINDOW_MS,
-  peerLimit: LIMIT,
-  globalLimit: 800,
-  maxBuckets: 10_000,
+  limit: 800,
   statusMessage: 'Too many website checks. Please try again later.',
 })
 
 export function resetSiteAnalysisRateLimitsForTests() {
-  analysisRateLimiter.resetForTests()
+  analysisRequestBudget.resetForTests()
 }
 
 export default defineEventHandler(async (event) => {
@@ -28,7 +25,7 @@ export default defineEventHandler(async (event) => {
   })
   const parsed = inputSchema.safeParse(body)
   if (!parsed.success) throw createError({ statusCode: 422, statusMessage: 'Enter a valid public website URL.' })
-  analysisRateLimiter.enforce(directPeerRequestFingerprint(event, 'site-analysis-v2'))
+  analysisRequestBudget.enforce()
   try {
     return await analysePublicHomepage(parsed.data.url)
   } catch (error) {

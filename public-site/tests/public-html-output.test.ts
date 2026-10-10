@@ -85,8 +85,13 @@ describe('Astro public static output', () => {
       expect(document.querySelector('.platform-next-step a')?.getAttribute('href')).toBe(`${route}#fit`)
       expect(document.querySelector('.platform-marquee')?.textContent).not.toMatch(/不代表合作關係|do not imply partnership/i)
     }
-    const english = htmlFor('/en')
-    expect(english).toContain('100,000+ real-world')
-    expect(english).not.toMatch(/Asia(?:'s|’s) only|ASIA’S ONLY/i)
+    const marketingHtml = ['/en', '/zh-hant', '/en/services/seo-geo-growth-system', '/zh-hant/services/seo-geo-growth-system']
+      .map(htmlFor)
+      .join('\n')
+    expect(marketingHtml).toContain('Evidence-led')
+    expect(marketingHtml).toContain('自主研發')
+    expect(marketingHtml).toMatch(/verifiable (?:search and AI )?observations/i)
+    expect(marketingHtml).not.toMatch(/Asia(?:'s|’s) only|ASIA’S ONLY|亞洲唯一/i)
+    expect(marketingHtml).not.toMatch(/100,?000\+|real-world data points/i)
   })
 })

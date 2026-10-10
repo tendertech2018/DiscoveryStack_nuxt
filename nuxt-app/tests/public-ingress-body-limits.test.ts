@@ -55,7 +55,7 @@ afterAll(() => {
   vi.unstubAllGlobals()
 })
 
-function http() {
+function http(peerAddress?: string) {
   const app = createApp({
     debug: false,
     onError: async (error, event) => {
@@ -63,6 +63,7 @@ function http() {
       await send(event, JSON.stringify({ statusCode: error.statusCode || 500, statusMessage: error.statusMessage || 'Request failed.' }), 'application/json')
     },
   })
+  if (peerAddress) app.use(defineEventHandler(event => { event.context.clientAddress = peerAddress }))
   const router = createRouter()
   router.post('/owner-login', ownerLogin)
   router.post('/api/leads', leads)
@@ -160,5 +161,25 @@ describe('bounded public ingress routes', () => {
     const invalid = await http()('/api/site-analysis', JSON.stringify({ url: 'not-a-url' }), 'application/json')
     expect(invalid.status).toBe(422)
     expect(seams.analysePublicHomepage).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['shared proxy', 'absent adapter peer'])('allows more than eight analyses through a %s while rotated headers cannot bypass the 800-call process budget', async (mode) => {
+    const request = http(mode === 'shared proxy' ? '10.0.0.7' : undefined)
+    const body = JSON.stringify({ url: 'https://example.test/' })
+    for (let index = 0; index < 800; index += 1) {
+      const response = await request('/api/site-analysis', body, 'application/json', {
+        'x-forwarded-for': `198.51.100.${index % 250 + 1}`,
+        'x-real-ip': `203.0.113.${index % 250 + 1}`,
+        'user-agent': `synthetic-agent-${index}`,
+      })
+      expect(response.status).toBe(200)
+      await response.body?.cancel()
+    }
+    const blocked = await request('/api/site-analysis', body, 'application/json', {
+      'x-forwarded-for': '192.0.2.200',
+      'user-agent': 'one-more-synthetic-agent',
+    })
+    expect(blocked.status).toBe(429)
+    expect(seams.analysePublicHomepage).toHaveBeenCalledTimes(800)
   })
 })

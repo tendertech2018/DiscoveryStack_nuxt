@@ -3,20 +3,18 @@ import { createError, getRequestIP, type H3Event } from 'h3'
 
 type Bucket = { count: number; startedAt: number }
 
-type ProcessRateLimiterOptions = {
+type ProcessRequestBudgetOptions = {
   windowMs: number
-  peerLimit: number
-  globalLimit: number
-  maxBuckets: number
+  limit: number
   statusMessage: string
 }
 
 export const PUBLIC_REQUEST_BODY_MAX_BYTES = 16 * 1_024
 
 /**
- * Hash only the transport peer supplied by H3/Nitro. Forwarding and User-Agent
- * headers are client-controlled unless a separately verified edge trust policy
- * says otherwise, so they must not create fresh public rate-limit identities.
+ * Coarse transport metadata only, not an authenticated visitor identity or a
+ * public rate-limit key. Proxies can share a peer and serverless adapters can
+ * omit it. Never trust forwarding or User-Agent headers to refine this value.
  */
 export function directPeerRequestFingerprint(event: H3Event, namespace: string) {
   const peerAddress = getRequestIP(event) || 'unknown-peer'
@@ -24,64 +22,25 @@ export function directPeerRequestFingerprint(event: H3Event, namespace: string) 
 }
 
 /**
- * Per-process protection for small public endpoints. A shared edge/store remains
- * necessary for multi-replica global enforcement; this layer stays bounded and
- * fails closed instead of allowing distinct peers to grow memory without limit.
+ * One fixed-size request budget per process, not a per-visitor limit. Render's
+ * proxy peer and a serverless adapter's absent peer must not collapse visitors
+ * into a small shared per-client allowance. No request-controlled identity or
+ * header can create a fresh budget. A shared edge/store is still required for
+ * enforcement across replicas; this state resets when the process restarts.
  */
-export function createBoundedProcessRateLimiter(options: ProcessRateLimiterOptions) {
-  const GLOBAL_BUCKET = 'global'
-  const buckets = new Map<string, Bucket>()
-  const pruneIntervalMs = Math.min(options.windowMs, 60_000)
-  let nextPruneAt = 0
-
-  const limited = (): never => {
-    throw createError({ statusCode: 429, statusMessage: options.statusMessage })
-  }
-
-  const pruneExpired = (now: number) => {
-    for (const [key, bucket] of buckets) {
-      if (now - bucket.startedAt >= options.windowMs) buckets.delete(key)
-    }
-    nextPruneAt = now + pruneIntervalMs
-  }
-
-  const consume = (key: string, now: number) => {
-    const bucket = buckets.get(key)
-    if (!bucket || now - bucket.startedAt >= options.windowMs) {
-      buckets.set(key, { count: 1, startedAt: now })
-      return
-    }
-    bucket.count += 1
-  }
-
-  const assertAvailable = (key: string, limit: number, now: number) => {
-    const bucket = buckets.get(key)
-    if (bucket && now - bucket.startedAt < options.windowMs && bucket.count >= limit) limited()
-  }
+export function createProcessRequestBudget(options: ProcessRequestBudgetOptions) {
+  let bucket: Bucket | null = null
 
   return {
-    enforce(fingerprint: string, now = Date.now()) {
-      const peerKey = `peer:${fingerprint || 'unknown-peer'}`
-      if (now >= nextPruneAt) pruneExpired(now)
-
-      const missingBuckets = Number(!buckets.has(GLOBAL_BUCKET)) + Number(!buckets.has(peerKey))
-      if (buckets.size + missingBuckets > options.maxBuckets) {
-        pruneExpired(now)
-        const missingAfterPrune = Number(!buckets.has(GLOBAL_BUCKET)) + Number(!buckets.has(peerKey))
-        if (buckets.size + missingAfterPrune > options.maxBuckets) limited()
+    enforce(now = Date.now()) {
+      if (!bucket || now - bucket.startedAt >= options.windowMs) {
+        bucket = { count: 0, startedAt: now }
       }
-
-      // Check both buckets before mutating either. In particular, repeated calls
-      // from a peer that is already blocked must not consume the shared quota and
-      // turn one abusive client into a process-wide denial of service.
-      assertAvailable(peerKey, options.peerLimit, now)
-      assertAvailable(GLOBAL_BUCKET, options.globalLimit, now)
-      consume(GLOBAL_BUCKET, now)
-      consume(peerKey, now)
+      if (bucket.count >= options.limit) throw createError({ statusCode: 429, statusMessage: options.statusMessage })
+      bucket.count += 1
     },
     resetForTests() {
-      buckets.clear()
-      nextPruneAt = 0
+      bucket = null
     },
   }
 }
