@@ -41,7 +41,7 @@ const deltaClass = (metric: Metric) => metric.delta > 0 ? 'metric-up' : metric.d
 
 <template>
   <main class="geo-workbench">
-    <header class="geo-header"><NuxtLink class="back-link" to="/audit-lab">← 返回私有稽核實驗室</NuxtLink><p class="eyebrow">OWNER-ONLY · GEO WORKBENCH V1</p><h1>把內容改得<br><em>更清楚、可驗證。</em></h1><p>這是 owner-only 的無資料庫比較流程。完成百煉 Qwen server-side 設定後，會以完整 AutoGEO 官方 prompt／ruleset 執行；未設定或 provider 無法使用時，會明確標示為 reference fallback。原文只在本次 request 中處理，不會儲存或訓練模型。</p></header>
+    <header class="geo-header"><NuxtLink class="back-link" to="/audit-lab">← 返回私有稽核實驗室</NuxtLink><p class="eyebrow">OWNER-ONLY · GEO WORKBENCH V1</p><h1>把內容改得<br><em>更清楚、可驗證。</em></h1><p>把原文交給 AI 整理，再由你比較、查核與決定是否採用。預設的限額測試只呼叫一次 AI，失敗就停止；不會偷偷改用別家服務。原文不寫入資料庫，草稿不會自動發布，也不會用來訓練模型。只有關閉限額測試的一般模式，才保留原有的其他服務與規則備援。</p></header>
     <section class="geo-panel">
       <div class="wide"><p class="eyebrow">INPUT</p><h2>貼入要人工審閱的原文</h2></div>
       <form class="geo-form" @submit.prevent="runOptimization">
