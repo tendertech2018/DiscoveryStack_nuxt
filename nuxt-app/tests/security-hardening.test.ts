@@ -138,6 +138,13 @@ describe('owner authentication hardening', () => {
     expect(() => enforceSimpleLoginRateLimit('peer-a')).not.toThrow()
   })
 
+  it('does not let a denied owner-login peer drain the process-wide allowance', () => {
+    for (let attempt = 0; attempt < 5; attempt += 1) enforceSimpleLoginRateLimit('peer-a')
+    for (let attempt = 0; attempt < 10; attempt += 1) expect(() => enforceSimpleLoginRateLimit('peer-a')).toThrow(/Too many sign-in attempts/u)
+    for (let peer = 0; peer < 45; peer += 1) expect(() => enforceSimpleLoginRateLimit(`other-peer-${peer}`)).not.toThrow()
+    expect(() => enforceSimpleLoginRateLimit('global-overflow-peer')).toThrow(/Too many sign-in attempts/u)
+  })
+
   it('never creates a user or promotes a role from the temporary login route', () => {
     const source = readFileSync(join(process.cwd(), 'server/routes/owner-login.post.ts'), 'utf8')
     expect(source).toContain('await setOwnerSession')

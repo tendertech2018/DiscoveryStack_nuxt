@@ -1,29 +1,33 @@
-import { createHash } from 'node:crypto'
 import { and, eq, gt } from 'drizzle-orm'
-import { createError, getHeader, getRequestIP, type H3Event } from 'h3'
+import type { H3Event } from 'h3'
 import { getDatabase } from '../database'
 import { leads } from '../database/schema'
 import { leadDedupeKey, modelImprovementConsentReceipt, type LeadInput } from './leadInput'
+import { createBoundedProcessRateLimiter, directPeerRequestFingerprint } from './publicRequestGuard'
 
 const DEDUPE_WINDOW_MS = 15 * 60 * 1_000
 const RATE_WINDOW_MS = 60 * 60 * 1_000
 const RATE_LIMIT = 5
-const rateBuckets = new Map<string, { count: number, startedAt: number }>()
-const hashFingerprint = (value: string) => createHash('sha256').update(value).digest('hex')
+const GLOBAL_RATE_LIMIT = 500
+const MAX_RATE_BUCKETS = 10_000
+const leadRateLimiter = createBoundedProcessRateLimiter({
+  windowMs: RATE_WINDOW_MS,
+  peerLimit: RATE_LIMIT,
+  globalLimit: GLOBAL_RATE_LIMIT,
+  maxBuckets: MAX_RATE_BUCKETS,
+  statusMessage: 'Too many submissions. Please try again later.',
+})
 
 export function requestFingerprint(event: H3Event) {
-  return hashFingerprint(`${getRequestIP(event, { xForwardedFor: true }) || ''}\n${getHeader(event, 'user-agent') || ''}`)
+  return directPeerRequestFingerprint(event, 'public-contact-v2')
 }
 
 export function enforceLeadRateLimit(fingerprint: string) {
-  const now = Date.now()
-  const bucket = rateBuckets.get(fingerprint)
-  if (!bucket || now - bucket.startedAt >= RATE_WINDOW_MS) {
-    rateBuckets.set(fingerprint, { count: 1, startedAt: now })
-    return
-  }
-  if (bucket.count >= RATE_LIMIT) throw createError({ statusCode: 429, statusMessage: 'Too many submissions. Please try again later.' })
-  bucket.count += 1
+  leadRateLimiter.enforce(fingerprint)
+}
+
+export function resetLeadRateLimitsForTests() {
+  leadRateLimiter.resetForTests()
 }
 
 export async function storeLead(event: H3Event, input: LeadInput) {

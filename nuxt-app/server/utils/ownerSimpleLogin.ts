@@ -74,13 +74,19 @@ function pruneExpiredRateBuckets(now: number) {
   if (attempts.size >= MAX_RATE_BUCKETS) throw createError({ statusCode: 429, statusMessage: 'Too many sign-in attempts. Please wait a few minutes and try again.' })
 }
 
-function consumeRateBucket(key: string, limit: number, now: number) {
+function assertRateBucketAvailable(key: string, limit: number, now: number) {
+  const bucket = attempts.get(key)
+  if (bucket && now - bucket.startedAt < RATE_WINDOW_MS && bucket.count >= limit) {
+    throw createError({ statusCode: 429, statusMessage: 'Too many sign-in attempts. Please wait a few minutes and try again.' })
+  }
+}
+
+function consumeRateBucket(key: string, now: number) {
   const bucket = attempts.get(key)
   if (!bucket || now - bucket.startedAt >= RATE_WINDOW_MS) {
     attempts.set(key, { count: 1, startedAt: now })
     return
   }
-  if (bucket.count >= limit) throw createError({ statusCode: 429, statusMessage: 'Too many sign-in attempts. Please wait a few minutes and try again.' })
   bucket.count += 1
 }
 
@@ -126,8 +132,13 @@ export function assertSimpleLoginRequestOrigin(event: H3Event) {
 export function enforceSimpleLoginRateLimit(fingerprint: string) {
   const now = Date.now()
   pruneExpiredRateBuckets(now)
-  consumeRateBucket(GLOBAL_RATE_BUCKET, GLOBAL_RATE_LIMIT, now)
-  consumeRateBucket(`peer:${fingerprint || 'unknown'}`, RATE_LIMIT, now)
+  const peerBucket = `peer:${fingerprint || 'unknown'}`
+  // Check both limits before recording either attempt. Once a peer is blocked,
+  // its repeated traffic must not drain the process-wide allowance for others.
+  assertRateBucketAvailable(peerBucket, RATE_LIMIT, now)
+  assertRateBucketAvailable(GLOBAL_RATE_BUCKET, GLOBAL_RATE_LIMIT, now)
+  consumeRateBucket(GLOBAL_RATE_BUCKET, now)
+  consumeRateBucket(peerBucket, now)
 }
 
 export function clearSimpleLoginRateLimit(fingerprint: string) {

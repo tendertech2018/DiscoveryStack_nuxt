@@ -1,28 +1,34 @@
 import { z } from 'zod'
 import { analysePublicHomepage } from '../utils/publicSiteAnalysis'
-import { requestFingerprint } from '../utils/lead'
+import { createBoundedProcessRateLimiter, directPeerRequestFingerprint, PUBLIC_REQUEST_BODY_MAX_BYTES } from '../utils/publicRequestGuard'
+import { readBoundedRequestBody } from '../utils/bounded-request-body'
 
 const inputSchema = z.object({ url: z.string().trim().url().max(2048) })
-const buckets = new Map<string, { count: number, startedAt: number }>()
 const WINDOW_MS = 60 * 60 * 1_000
 const LIMIT = 8
+const analysisRateLimiter = createBoundedProcessRateLimiter({
+  windowMs: WINDOW_MS,
+  peerLimit: LIMIT,
+  globalLimit: 800,
+  maxBuckets: 10_000,
+  statusMessage: 'Too many website checks. Please try again later.',
+})
 
-function enforceRateLimit(key: string) {
-  const now = Date.now()
-  const bucket = buckets.get(key)
-  if (!bucket || now - bucket.startedAt >= WINDOW_MS) {
-    buckets.set(key, { count: 1, startedAt: now })
-    return
-  }
-  if (bucket.count >= LIMIT) throw createError({ statusCode: 429, statusMessage: 'Too many website checks. Please try again later.' })
-  bucket.count += 1
+export function resetSiteAnalysisRateLimitsForTests() {
+  analysisRateLimiter.resetForTests()
 }
 
 export default defineEventHandler(async (event) => {
   setHeader(event, 'cache-control', 'no-store')
-  const parsed = inputSchema.safeParse(await readBody(event))
+  const body = await readBoundedRequestBody(event, {
+    maxBytes: PUBLIC_REQUEST_BODY_MAX_BYTES,
+    oversizedMessage: 'Website check request body is too large.',
+    invalidMessage: 'Enter a valid public website URL.',
+    invalidStatusCode: 422,
+  })
+  const parsed = inputSchema.safeParse(body)
   if (!parsed.success) throw createError({ statusCode: 422, statusMessage: 'Enter a valid public website URL.' })
-  enforceRateLimit(requestFingerprint(event))
+  analysisRateLimiter.enforce(directPeerRequestFingerprint(event, 'site-analysis-v2'))
   try {
     return await analysePublicHomepage(parsed.data.url)
   } catch (error) {
