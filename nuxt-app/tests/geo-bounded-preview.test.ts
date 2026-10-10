@@ -252,6 +252,43 @@ describe('bounded single-provider Qwen preview', () => {
     await expect(create(providerFetch(value)).rewrite(document, [])).resolves.toMatchObject({ optimizedContent: document.content })
   })
 
+  // Official non-streaming response contract, checked 2026-10-10:
+  // https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-chat-completions
+  it.each([undefined, null, []])('accepts documented null optional fields and no tool calls %#', async tool_calls => {
+    const payload = envelope()
+    const value = { ...payload, choices: [{ ...payload.choices[0], message: { ...payload.choices[0]!.message, tool_calls, function_call: null, reasoning_content: null, refusal: null, audio: null } }], usage: { ...payload.usage, completion_tokens_details: null } }
+    const fetchMock = providerFetch(value)
+    const result = await create(fetchMock).rewrite(document, [])
+    expect(result.provenance.boundedPreviewReceipt).toMatchObject({ estimatedCostUsd: 0.0002, attempts: 1, thinking: false })
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { tool_calls: [{ type: 'function', function: { name: 'search', arguments: '{}' } }] },
+    { tool_calls: {} }, { tool_calls: '' }, { tool_calls: false },
+    { function_call: { name: 'search', arguments: '{}' } },
+  ])('still rejects actual or malformed tool calls even with stop finish reason %#', async extra => {
+    const payload = envelope()
+    const value = { ...payload, choices: [{ ...payload.choices[0], message: { ...payload.choices[0]!.message, ...extra } }] }
+    const fetchMock = providerFetch(value)
+    await expect(create(fetchMock).rewrite(document, [])).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
+
+  it('accepts unavailable optional reasoning detail but not missing required token counts', async () => {
+    const payload = envelope()
+    const usage = { ...payload.usage, completion_tokens_details: { reasoning_tokens: null } }
+    await expect(create(providerFetch({ ...payload, usage })).rewrite(document, [])).resolves.toMatchObject({ optimizedContent: document.content })
+    await expect(create(providerFetch({ ...payload, usage: { ...usage, completion_tokens: null } })).rewrite(document, [])).rejects.toMatchObject({ code: 'USAGE_INVALID' })
+  })
+
+  it.each([[], '', false])('rejects non-object non-null completion detail %#', async completion_tokens_details => {
+    const payload = envelope()
+    await expect(create(providerFetch({ ...payload, usage: { ...payload.usage, completion_tokens_details } })).rewrite(document, [])).rejects.toMatchObject({ code: 'USAGE_INVALID' })
+  })
+
   it.each(['unsafe output', 'transport failure'])('does not call Gemini or yield deterministic fallback after %s', async mode => {
     vi.stubEnv('NUXT_AUTOGEO_GEMINI_API_KEY', 'fixture-gemini-key')
     const payload = envelope()
