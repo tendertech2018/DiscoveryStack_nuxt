@@ -25,4 +25,6 @@ DiscoveryStack 由兩個獨立應用組成：`public-site` 是公開 Astro 官�
 
 本機程式測試通過不等於 production 已完成。寄件網域、付款 webhook、資料庫 migration、網站交付與不休眠背景排程仍需逐項實測。
 
+部署前請依 [正式營運與驗收手冊](nuxt-app/docs/PRODUCTION_OPERATIONS_RUNBOOK.md) 執行版本與資料庫 readiness、加密備份與隔離還原演練。擁有人可在「系統與設定 → 營運狀態」查看資料庫版本及背景工作紀錄；這些紀錄與真實供應商、客戶流程及模型品質的驗收分開判定。
+
 更多應用邊界：[公開站文件](public-site/README.md)、[後台文件](nuxt-app/README.md)。

@@ -1,3 +1,10 @@
 onlyBuiltDependencies:
   - better-sqlite3
   - esbuild
+# Nuxt's development tools still request simple-git 3.x. The security fixes
+# (including unsafe editor/config guards) exist only in the 4.x release line.
+overrides:
+  '@nuxt/devtools>simple-git': 4.0.2
+  '@esbuild-kit/core-utils>esbuild': 0.25.12
+patchedDependencies:
+  '@nuxt/devtools@3.4.2': patches/@nuxt__devtools@3.4.2.patch

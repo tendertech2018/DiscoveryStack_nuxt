@@ -1,6 +1,8 @@
+import { isStrongSessionSecret } from '../utils/auth'
+
 export default defineEventHandler((event) => {
   const config = useRuntimeConfig(event)
-  const hasSessionSecret = Boolean(
+  const hasSessionSecret = isStrongSessionSecret(
     (typeof config.sessionSecret === 'string' && config.sessionSecret)
     || process.env.NUXT_SESSION_SECRET
     || process.env.JWT_SECRET,

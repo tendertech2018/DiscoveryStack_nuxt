@@ -15,6 +15,7 @@ describe('owner navigation data and route resolution', () => {
       '/audit-lab/knowledge',
       '/audit-lab/site-evidence',
       '/audit-lab/email-delivery',
+      '/audit-lab/operations',
       '/audit-lab/geo',
       '/audit-lab/seo-geo',
       '/audit-lab/geo-outcome-model',

@@ -1,13 +1,27 @@
 import { SignJWT, jwtVerify } from 'jose'
-import type { H3Event } from 'h3'
+import { createError, type H3Event } from 'h3'
 import { eq } from 'drizzle-orm'
 import { getDatabase } from '../database'
 import { users } from '../database/schema'
 
 const SESSION_COOKIE = '__Host-discoverystack-session'
 const SESSION_DURATION_SECONDS = 60 * 60 * 8
+const MIN_SESSION_SECRET_BYTES = 32
+const MAX_SESSION_SECRET_BYTES = 4_096
 
 type AdminSession = { openId: string, name: string, role: 'admin' }
+
+/**
+ * Session signing keys are high-value server secrets, not user passwords.
+ * Reject surrounding whitespace as an operator error and keep a generous upper
+ * bound so an accidentally mounted file or serialized object cannot become the
+ * HMAC key.
+ */
+export function isStrongSessionSecret(value: unknown): value is string {
+  if (typeof value !== 'string' || value !== value.trim()) return false
+  const bytes = Buffer.byteLength(value, 'utf8')
+  return bytes >= MIN_SESSION_SECRET_BYTES && bytes <= MAX_SESSION_SECRET_BYTES
+}
 
 function authConfig(event: H3Event) {
   const config = useRuntimeConfig(event)
@@ -15,7 +29,7 @@ function authConfig(event: H3Event) {
   // into the running container, so the server-only environment fallback keeps the
   // session boundary available without ever exposing either value to the client.
   const sessionSecret = (typeof config.sessionSecret === 'string' ? config.sessionSecret : '') || process.env.NUXT_SESSION_SECRET || process.env.JWT_SECRET || ''
-  if (!sessionSecret) {
+  if (!isStrongSessionSecret(sessionSecret)) {
     throw createError({ statusCode: 503, statusMessage: 'Private administration is not configured.' })
   }
   return { secret: new TextEncoder().encode(sessionSecret) }

@@ -7,13 +7,15 @@ const schema = readFileSync(join(root, 'server/database/schema.ts'), 'utf8')
 const pipeline = readFileSync(join(root, 'server/model-improvement/pipeline.ts'), 'utf8')
 const task = readFileSync(join(root, 'server/tasks/model-improvement/collect.ts'), 'utf8')
 const config = readFileSync(join(root, 'nuxt.config.ts'), 'utf8')
+const taskCatalog = readFileSync(join(root, 'server/operations/task-catalog.ts'), 'utf8')
 const listApi = readFileSync(join(root, 'server/api/intelligence/model-improvement/pipeline.get.ts'), 'utf8')
 const collectApi = readFileSync(join(root, 'server/api/intelligence/model-improvement/collect.post.ts'), 'utf8')
 const reviewApi = readFileSync(join(root, 'server/api/intelligence/model-improvement/candidates/[id]/review.post.ts'), 'utf8')
 
 describe('daily consented-data automation contract', () => {
   it('schedules one named Nitro task and keeps manual controls owner-only', () => {
-    expect(config).toContain("['model-improvement:collect']")
+    expect(config).toContain('getOperationsTaskDefinitions(process.env)')
+    expect(taskCatalog).toContain("name: 'model-improvement:collect'")
     expect(task).toContain("name: 'model-improvement:collect'")
     expect(listApi).toContain('requireOwner(event)')
     expect(collectApi).toContain('requireOwner(event)')

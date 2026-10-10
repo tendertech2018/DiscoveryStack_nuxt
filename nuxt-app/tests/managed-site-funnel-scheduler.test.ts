@@ -1,23 +1,10 @@
-import { fileURLToPath } from 'node:url'
-import { readFileSync } from 'node:fs'
-import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
+import { getOperationsTaskDefinitions } from '../server/operations/task-catalog'
 
-const source = readFileSync(new URL('../nuxt.config.ts', import.meta.url), 'utf8')
 function schedules(env: Record<string, string> = {}): Record<string, string[]> {
-  const replaceConfigUrl: ts.TransformerFactory<ts.SourceFile> = context => node => {
-    const visit: ts.Visitor = child => ts.isPropertyAccessExpression(child) && child.name.text === 'url' && ts.isMetaProperty(child.expression) && child.expression.keywordToken === ts.SyntaxKind.ImportKeyword
-      ? ts.factory.createIdentifier('configUrl') : ts.visitEachChild(child, visit, context)
-    return ts.visitNode(node, visit) as ts.SourceFile
-  }
-  const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }, transformers: { before: [replaceConfigUrl] } }).outputText
-  const module = { exports: {} as any }
-  const requireBuiltin = (name: string) => {
-    if (name !== 'node:url') throw new Error('The schedule fixture permits only the URL builtin.')
-    return { fileURLToPath }
-  }
-  new Function('require', 'module', 'exports', 'defineNuxtConfig', 'process', 'configUrl', js)(requireBuiltin, module, module.exports, (value: unknown) => value, { env }, new URL('../nuxt.config.ts', import.meta.url).href)
-  return module.exports.default.nitro.scheduledTasks
+  const registered: Record<string, string[]> = {}
+  for (const task of getOperationsTaskDefinitions(env)) (registered[task.cron] ||= []).push(task.name)
+  return registered
 }
 
 const configurableCronKeys = ['MODEL_IMPROVEMENT_CRON', 'GEO_MODELOPS_CRON', 'MANAGED_SITE_EDITOR_CRON', 'MANAGED_SITE_PROVISIONING_CRON', 'MANAGED_SITE_EMAIL_OUTBOX_CRON', 'SYSTEM_FACTORY_CRON', 'CONTENT_OPERATIONS_MEASUREMENT_CRON', 'CONTENT_OPERATIONS_CRON', 'CONTENT_OPERATIONS_EXECUTION_CRON', 'LLM_VISIBILITY_BENCHMARK_CRON']
@@ -52,5 +39,11 @@ describe('actual Nuxt scheduled task registration', () => {
     expect(registered[configuredCron]).toEqual(originalTasks)
     expect(registered[weeklyDefaultCron]).toEqual([weeklyTask, learningTask])
     expect(Object.values(registered).flat().sort()).toEqual([...originalTasks, weeklyTask, learningTask].sort())
+  })
+  it('reports the build-time cron snapshot even if runtime cron env later drifts', () => {
+    const built = getOperationsTaskDefinitions({ CONTENT_OPERATIONS_CRON: '*/10 * * * *' })
+    const snapshot = Object.fromEntries(built.map(task => [task.name, task.cron]))
+    const runtime = getOperationsTaskDefinitions({ CONTENT_OPERATIONS_CRON: '*/2 * * * *', NUXT_CONTENT_OPERATIONS_SCHEDULER_ENABLED: 'true' }, snapshot)
+    expect(runtime.find(task => task.name === 'content-operations:tick')).toMatchObject({ cron: '*/10 * * * *', enabled: true })
   })
 })

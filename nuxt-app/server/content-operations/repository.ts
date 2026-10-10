@@ -109,6 +109,77 @@ export function matchesPublishedV4DeliveredAuthority(authorization:ContentOperat
     && lineage.entryId===input.entryId && lineage.jobId===input.jobId && lineage.draftId===String(input.draftId) && lineage.entityProfileFingerprint===authorization.entityProfileFingerprint && lineage.queryOwnershipFingerprint===authorization.queryOwnershipFingerprint
     && candidate.contentHash===input.contentHash && content.contentHash===input.contentHash && content.draftId===String(input.draftId) && evidence.snapshotHash===input.evidenceSnapshotHash && evidence.status==='approved_fresh' && quality.status==='passed' && quality.fingerprint===authorization.qualityFingerprint && decision.action==='publish'
 }
+/**
+ * A private-draft receipt may outlive the short execution lease, but it only
+ * remains eligible for an owner-confirmed measurement when the consumed V4
+ * row, current owner policy and current target still match the exact attempt.
+ * This helper is read-only and does not turn the receipt into publication or
+ * learning authority.
+ */
+export function matchesDraftReceivedV4Authority(
+  authorization: ContentOperationMachineAuthorizationRow | null | undefined,
+  policy: ContentOperationAutopilotPolicyRow | null | undefined,
+  target: ContentOperationPublicationTargetRow | null | undefined,
+  input: {
+    ownerUserId: number
+    clientId: number
+    entryId: number
+    jobId: number
+    draftId: number
+    targetId: number
+    contentHash: string
+    evidenceSnapshotHash: string
+    authorityReference: string
+    startedAt: Date
+    now: Date
+  },
+): boolean {
+  if (!authorization || !policy || !target || authorization.status !== 'draft_received' || authorization.revokedAt !== null
+    || !authorization.authorizationExpiresAt || !authorization.claimedAt || !authorization.authorizationPayload || typeof authorization.authorizationPayload !== 'object'
+    || Array.isArray(authorization.authorizationPayload) || !Number.isFinite(input.startedAt.getTime()) || !Number.isFinite(input.now.getTime())) return false
+  const payload = authorization.authorizationPayload as Record<string, unknown>
+  const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  const { authorizationFingerprint: _embedded, ...base } = payload
+  const policyPayload = record(payload.policy)
+  const targetPayload = record(payload.target)
+  const lineagePayload = record(payload.lineage)
+  const candidatePayload = record(payload.candidate)
+  const contentPayload = record(payload.content)
+  const evidencePayload = record(payload.evidence)
+  const qualityPayload = record(payload.quality)
+  const decisionPayload = record(payload.decision)
+  return /^[a-f0-9]{64}$/u.test(input.authorityReference)
+    && authorization.authorizationFingerprint === input.authorityReference
+    && stableFingerprint(base) === input.authorityReference
+    && authorization.decidedAt.getTime() <= input.startedAt.getTime()
+    && authorization.claimedAt.getTime() <= input.startedAt.getTime()
+    && authorization.authorizationExpiresAt.getTime() > input.startedAt.getTime()
+    && authorization.ownerUserId === input.ownerUserId && authorization.clientId === input.clientId
+    && authorization.entryId === input.entryId && authorization.jobId === input.jobId && authorization.draftId === input.draftId
+    && authorization.publicationTargetId === input.targetId && authorization.contentHash === input.contentHash
+    && authorization.evidenceSnapshotHash === input.evidenceSnapshotHash && authorization.policyVersion === 'governed-autopilot-policy-v4'
+    && authorization.qualityStatus === 'passed' && authorization.qualityFingerprint === qualityPayload.fingerprint
+    && policy.ownerUserId === input.ownerUserId && policy.authorizedByOwnerUserId === input.ownerUserId
+    && policy.clientId === input.clientId && policy.publicationTargetId === input.targetId
+    && policy.policyVersion === 'governed-autopilot-policy-v4' && policy.status === 'enabled'
+    && policy.requireApprovedForDelivery === false && policy.revokedAt === null && policy.expiresAt.getTime() > input.now.getTime()
+    && authorization.policyId === policy.policyId && authorization.policyVersion === policy.policyVersion
+    && authorization.policyFingerprint === policy.configurationFingerprint && authorization.websiteId === policy.websiteId
+    && target.ownerUserId === input.ownerUserId && target.clientId === input.clientId && target.id === input.targetId
+    && target.status === 'active' && target.executionEnabled === true && target.revokedAt === null
+    && target.websiteId === policy.websiteId && authorization.targetId === target.targetId
+    && policyPayload.policyId === policy.policyId && policyPayload.policyVersion === policy.policyVersion
+    && policyPayload.configurationFingerprint === policy.configurationFingerprint && policyPayload.ownerUserId === input.ownerUserId
+    && policyPayload.clientId === input.clientId && policyPayload.websiteId === policy.websiteId
+    && targetPayload.websiteId === policy.websiteId && targetPayload.targetRowId === input.targetId && targetPayload.destinationId === target.targetId
+    && targetPayload.configurationFingerprint === target.configurationFingerprint && targetPayload.identityVerified === true
+    && lineagePayload.entryId === input.entryId && lineagePayload.jobId === input.jobId && lineagePayload.draftId === String(input.draftId)
+    && lineagePayload.entityProfileFingerprint === authorization.entityProfileFingerprint
+    && lineagePayload.queryOwnershipFingerprint === authorization.queryOwnershipFingerprint
+    && candidatePayload.contentHash === input.contentHash && contentPayload.contentHash === input.contentHash
+    && contentPayload.draftId === String(input.draftId) && evidencePayload.snapshotHash === input.evidenceSnapshotHash
+    && evidencePayload.status === 'approved_fresh' && qualityPayload.status === 'passed' && decisionPayload.action === 'publish'
+}
 export type PublicationAttemptReservation = { attempt: ContentOperationPublicationAttemptRow; run: ContentOperationRunRow; replayed: boolean }
 export type PublicationAttemptFinalization = Pick<ContentOperationPublicationAttemptRow, 'status' | 'artifactFingerprint' | 'remoteState' | 'receiptLedger' | 'remoteRevision' | 'receiptFingerprint' | 'publicationUrl' | 'errorCode' | 'errorSummary' | 'completedAt'>
 

@@ -1,0 +1,22 @@
+[
+  {
+    "app": "discoverystack-nuxt",
+    "advisory": "GHSA-86w9-cpqp-85rv",
+    "module": "node-forge",
+    "version": "1.4.0",
+    "paths": [".>nuxt>@nuxt/cli>listhen>node-forge"],
+    "expires": "2026-11-09",
+    "reason": "No upstream fixed release as of 2026-10-10. Used by the Nuxt development CLI for local TLS, not by the Nitro production server. The production image only copies .output; container smoke asserts node-forge is absent. Do not use the CLI to verify untrusted signatures.",
+    "source": "https://github.com/advisories/GHSA-86w9-cpqp-85rv"
+  },
+  {
+    "app": "discoverystack-nuxt",
+    "advisory": "GHSA-vfj7-8cjw-p6xm",
+    "module": "braces",
+    "version": "3.0.3",
+    "paths": [".>nuxt>@nuxt/nitro-server>nitropack>globby>micromatch>braces"],
+    "expires": "2026-11-09",
+    "reason": "No upstream fixed release as of 2026-10-10. Nitro uses this build dependency for repository-controlled glob patterns. No customer pattern is admitted to the build. The runtime image only copies .output; container smoke asserts braces is absent.",
+    "source": "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm"
+  }
+]

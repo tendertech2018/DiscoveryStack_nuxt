@@ -5,7 +5,7 @@ import { createWeeklyContentRepository, type WeeklyContentRepository } from '../
 import { revalidateConsumedWeeklyPublicationConsent } from '../weekly-content/site-measurement-consent'
 import { createBoundedFetch } from './bounded-fetch'
 import { getContentOperationsRuntimeDependencies } from './runtime-dependencies'
-import { createContentOperationsRepository, type ContentOperationsRepository } from './repository'
+import { createContentOperationsRepository, matchesDraftReceivedV4Authority, type ContentOperationsRepository } from './repository'
 import { stableFingerprint } from './normalization'
 import { resolvePublicationPublicUrl } from './publication-public-url'
 import { latestSitePublicationRecord, listSitePublicationHistory, loadSitePublicationContext } from './site-publication'
@@ -47,11 +47,18 @@ export function parseSiteMeasurementConfirmInput(value: unknown) {
   return { targetRowId: raw.targetRowId as number, expectedPublicationFingerprint: raw.expectedPublicationFingerprint as string, confirmed: true as const, idempotencyKey: raw.idempotencyKey as string }
 }
 
-/** Manual review is the only ingest mode currently accepted by the Do pilot. No machine authority is fabricated. */
+/**
+ * Resolve only server-owned authority. Manual review and consumed V4 machine
+ * authority are distinct paths; neither a client payload nor a LINE decision
+ * can manufacture the other.
+ */
 async function authority(ownerUserId: number, entryId: number, targetRowId: number, repository: ContentOperationsRepository, options: Options) {
   const context = await loadSitePublicationContext(repository, ownerUserId, entryId, targetRowId)
   const lineage = await repository.resolveWorkspaceEntry(ownerUserId, entryId)
-  if (!lineage?.job || !lineage.draft || !lineage.review || !lineage.riskGate || context.attempt.authorityReference != null || context.attempt.routeId
+  const authorityReference = context.attempt.authorityReference ?? null
+  const manualAuthority = authorityReference === null
+  const machineAuthority = typeof authorityReference === 'string' && HASH.test(authorityReference)
+  if (!lineage?.job || !lineage.draft || !lineage.riskGate || (!manualAuthority && !machineAuthority) || context.attempt.routeId
     || lineage.entry.id !== entryId || lineage.entry.ownerUserId !== ownerUserId || lineage.entry.status !== 'awaiting_site_review'
     || lineage.calendar.ownerUserId !== ownerUserId || lineage.client.ownerUserId !== ownerUserId || lineage.client.id !== context.target.clientId
     || lineage.calendar.clientId !== context.target.clientId || lineage.deliverable.ownerUserId !== ownerUserId
@@ -62,21 +69,46 @@ async function authority(ownerUserId: number, entryId: number, targetRowId: numb
     || lineage.job.evidenceSnapshotHash !== context.entry.evidenceSnapshotHash || lineage.draft.id !== context.entry.draftId
     || lineage.draft.jobId !== lineage.job.id || lineage.draft.contentHash !== context.entry.contentHash || lineage.draft.safetyStatus !== 'passed'
     || !Number.isSafeInteger(lineage.draft.version) || lineage.draft.version < 1 || !context.attempt.startedAt || !context.attempt.completedAt) fail()
-  const [latestDraft, review, risk, canonical, runs] = await Promise.all([
+  if (manualAuthority && (!lineage.review || lineage.entry.publicationAuthorityReference != null)) fail()
+  if (machineAuthority && (lineage.review || lineage.entry.reviewId !== null || lineage.entry.publicationAuthorityReference !== authorityReference
+    || lineage.client.requireCustomerApproval !== true)) fail()
+  const now = options.now ?? new Date()
+  const [latestDraft, review, risk, canonical, runs, policy, machineAuthorization] = await Promise.all([
     repository.findLatestOptimizedDraft(ownerUserId, lineage.job.id),
-    repository.findLatestReview(ownerUserId, lineage.job.id, lineage.draft.id, context.entry.evidenceSnapshotHash),
+    manualAuthority ? repository.findLatestReview(ownerUserId, lineage.job.id, lineage.draft.id, context.entry.evidenceSnapshotHash) : Promise.resolve(null),
     repository.findRiskGate(ownerUserId, lineage.draft.id, context.entry.evidenceSnapshotHash),
     repository.resolveCanonicalContext(ownerUserId, lineage.calendar.productionPlanId, context.entry.productionDeliverableId),
     repository.listRuns(ownerUserId, entryId),
+    machineAuthority ? repository.findAutopilotPolicy(ownerUserId, lineage.client.id, targetRowId) : Promise.resolve(null),
+    machineAuthority ? repository.findMachineAuthorization(ownerUserId, entryId, authorityReference) : Promise.resolve(null),
   ])
   const ingestRun = runs.find(run => run.id === context.attempt.runId && run.ownerUserId === ownerUserId && run.entryId === entryId && run.stage === 'publication' && run.state === 'succeeded')
   if (!latestDraft || latestDraft.id !== lineage.draft.id || latestDraft.version !== lineage.draft.version || latestDraft.contentHash !== context.entry.contentHash
     || contentFingerprint(latestDraft.title, latestDraft.body) !== context.entry.contentHash || sha(latestDraft.body) !== context.attempt.publicationContentHash
-    || !review || review.id !== context.entry.reviewId || review.id !== lineage.review.id || review.reviewerUserId !== ownerUserId
-    || review.jobId !== lineage.job.id || review.draftId !== lineage.draft.id || review.evidenceSnapshotHash !== context.entry.evidenceSnapshotHash || review.decision !== 'approved_for_delivery'
     || !risk || risk.status !== 'passed' || risk.id !== lineage.riskGate.id || risk.draftId !== lineage.draft.id || risk.evidenceSnapshotHash !== context.entry.evidenceSnapshotHash
     || canonical.evidenceSnapshot.hash !== context.entry.evidenceSnapshotHash || canonical.deliverable.id !== context.entry.productionDeliverableId
     || canonical.strategy.id !== context.entry.strategyRecommendationId || canonical.opportunity.key !== context.entry.topicCluster || !ingestRun) fail()
+  if (manualAuthority && (!review || !lineage.review || review.id !== context.entry.reviewId || review.id !== lineage.review.id || review.reviewerUserId !== ownerUserId
+    || review.jobId !== lineage.job.id || review.draftId !== lineage.draft.id || review.evidenceSnapshotHash !== context.entry.evidenceSnapshotHash
+    || review.decision !== 'approved_for_delivery')) fail()
+  let machineFingerprint: string | null = null
+  let machinePolicyFingerprint: string | null = null
+  if (machineAuthority) {
+    if (!matchesDraftReceivedV4Authority(machineAuthorization, policy, context.target, {
+      ownerUserId, clientId: lineage.client.id, entryId, jobId: lineage.job.id, draftId: lineage.draft.id,
+      targetId: targetRowId, contentHash: context.entry.contentHash!, evidenceSnapshotHash: context.entry.evidenceSnapshotHash,
+      authorityReference, startedAt: context.attempt.startedAt, now,
+    }) || !policy || !machineAuthorization || !policy.entityStrategyProfileId) fail()
+    const [profile, query] = await Promise.all([
+      repository.findEntityStrategyProfile(ownerUserId, lineage.client.id, policy.websiteId, policy.entityStrategyProfileId),
+      repository.findQueryOwnership(ownerUserId, lineage.client.id, policy.websiteId, context.entry.topicCluster),
+    ])
+    if (!profile || profile.status !== 'active' || profile.profileFingerprint !== machineAuthorization.entityProfileFingerprint
+      || profile.evidenceSnapshotHash !== context.entry.evidenceSnapshotHash || !query || query.status !== 'active'
+      || query.fingerprint !== machineAuthorization.queryOwnershipFingerprint || query.evidenceSnapshotHash !== context.entry.evidenceSnapshotHash) fail()
+    machineFingerprint = machineAuthorization.authorizationFingerprint
+    machinePolicyFingerprint = policy.configurationFingerprint
+  }
   const ruleIds = canonical.rules.map(rule => typeof rule.id === 'string' ? rule.id.trim() : '').filter(Boolean).sort()
   if (!ruleIds.length || new Set(ruleIds).size !== ruleIds.length || !Array.isArray(canonical.evidenceSnapshot.refs) || !canonical.evidenceSnapshot.refs.length) fail()
   if (!context.entry.publicationIdentityFingerprint || !HASH.test(context.entry.publicationIdentityFingerprint)
@@ -96,13 +128,23 @@ async function authority(ownerUserId: number, entryId: number, targetRowId: numb
         draftVersion: lineage.draft.version, contentType: context.entry.contentType, language: context.entry.language,
         contentHash: context.entry.contentHash!, evidenceSnapshotHash: context.entry.evidenceSnapshotHash, targetId: targetRowId,
         targetConfigurationFingerprint: context.target.configurationFingerprint, startedAt: context.attempt.startedAt,
-        authorityReference: null, reviewId: review.id }, now: options.now ?? new Date(), repository: options.weeklyRepository ?? options.weeklyRepositoryFactory!() })
+        authorityReference, reviewId: manualAuthority ? review!.id : null,
+        ...(machineAuthority ? { machineAuthorization: { authorizationFingerprint: machineFingerprint!, status: machineAuthorization!.status, revokedAt: machineAuthorization!.revokedAt } } : {}) },
+      now, repository: options.weeklyRepository ?? options.weeklyRepositoryFactory!() })
     if (consent.status !== 'verified') fail()
     consentFingerprint = consent.authorityFingerprint
   }
-  const authorityFingerprint = stableFingerprint({ version: VERSION, contextFingerprint: context.contextFingerprint, reviewId: review.id, reviewDecision: review.decision,
-    draftVersion: lineage.draft.version, riskGateId: risk.id, ruleIds, canonicalEvidenceFingerprint: stableFingerprint(canonical.evidenceSnapshot.refs),
-    canonicalPage, timeZone: lineage.client.timeZone, requireCustomerApproval: lineage.client.requireCustomerApproval, consentFingerprint })
+  // Preserve the exact V1 manual-review fingerprint so existing confirmed
+  // evidence does not require migration or reconfirmation. Machine authority is
+  // a separate shape and cannot collide with a manual review lineage.
+  const authorityFingerprint = manualAuthority
+    ? stableFingerprint({ version: VERSION, contextFingerprint: context.contextFingerprint, reviewId: review!.id, reviewDecision: review!.decision,
+        draftVersion: lineage.draft.version, riskGateId: risk.id, ruleIds, canonicalEvidenceFingerprint: stableFingerprint(canonical.evidenceSnapshot.refs),
+        canonicalPage, timeZone: lineage.client.timeZone, requireCustomerApproval: lineage.client.requireCustomerApproval, consentFingerprint })
+    : stableFingerprint({ version: 'site-measurement-machine-authority-v1', contextFingerprint: context.contextFingerprint,
+        machineAuthorizationFingerprint: machineFingerprint, machinePolicyFingerprint, draftVersion: lineage.draft.version,
+        riskGateId: risk.id, ruleIds, canonicalEvidenceFingerprint: stableFingerprint(canonical.evidenceSnapshot.refs), canonicalPage,
+        timeZone: lineage.client.timeZone, requireCustomerApproval: true, consentFingerprint })
   return { context, lineage, canonicalPage, authorityFingerprint, ruleIds }
 }
 type Authority = Awaited<ReturnType<typeof authority>>

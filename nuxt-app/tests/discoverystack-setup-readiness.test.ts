@@ -5,7 +5,7 @@ import { MANAGED_SITE_CONNECTOR_CAPABILITIES, type ManagedSiteProviderReadiness 
 function environment(): Record<string, string> {
   return {
     DISCOVERYSTACK_PUBLIC_SITE_ORIGIN: 'https://synthetic-ds.taipei', NUXT_DISCOVERYSTACK_PRIVATE_ORIGIN: 'https://ops.synthetic-ds.taipei',
-    DATABASE_URL: 'mysql://local-fixture:synthetic-value@db.test/ds', JWT_SECRET: 'synthetic-session-value-'.repeat(3), OWNER_OPEN_ID: 'fixture-owner', OWNER_SIMPLE_LOGIN_PASSWORD: 'synthetic-password-for-tests',
+    DATABASE_URL: 'mysql://local-fixture:synthetic-value@db.test/ds', JWT_SECRET: 'synthetic-session-value-'.repeat(3), OWNER_OPEN_ID: 'fixture-owner', OWNER_SIMPLE_LOGIN_ENABLED: 'true', OWNER_SIMPLE_LOGIN_PASSWORD: 'synthetic-password-for-tests-'.repeat(2),
     NUXT_MANAGED_SITE_EMAIL_API_KEY: 're_synthetic_resend_key', NUXT_MANAGED_SITE_EMAIL_FROM: 'DiscoveryStack <notifications@ds.test>',
     NUXT_MANAGED_SITE_EMAIL_CODE_PEPPER: 'synthetic-email-pepper-'.repeat(3),
     NUXT_MANAGED_SITE_EMAIL_OUTBOX_ENCRYPTION_KEY: 'synthetic-outbox-key-'.repeat(3),
@@ -28,6 +28,13 @@ function providers(verified: boolean): ManagedSiteProviderReadiness {
 const check = (result: ReturnType<typeof getDiscoveryStackSetupReadiness>, id: string) => result.checks.find(item => item.id === id)!
 
 describe('DiscoveryStack setup readiness', () => {
+  it('does not report temporary login ready without opt-in, independent key, and strong password', () => {
+    const env = environment()
+    for (const changed of [{ OWNER_SIMPLE_LOGIN_ENABLED: 'false' }, { OWNER_SIMPLE_LOGIN_PASSWORD: env.JWT_SECRET }, { OWNER_SIMPLE_LOGIN_PASSWORD: 'x'.repeat(31) }, { NUXT_PROVIDER_VAULT_KEY: env.OWNER_SIMPLE_LOGIN_PASSWORD }]) {
+      expect(check(getDiscoveryStackSetupReadiness({ env: { ...env, ...changed } }), 'owner_login').status).toBe('invalid')
+    }
+    expect(check(getDiscoveryStackSetupReadiness({ env: { ...env, JWT_SECRET: ` ${env.JWT_SECRET}` } }), 'session').status).toBe('invalid')
+  })
   it('does not consider an empty environment or missing provider rows ready', () => {
     const result = getDiscoveryStackSetupReadiness({ env: {} })
     expect(result.configurationReady).toBe(false)

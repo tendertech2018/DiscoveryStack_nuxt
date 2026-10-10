@@ -50,7 +50,9 @@ for (const kind of ['materialize', 'execute'] as const) describe(`content schedu
   it('stops before runtime/provider work when controlled owner resolution fails', async () => {
     vi.stubEnv('NUXT_CONTENT_OPERATIONS_SCHEDULER_ENABLED', 'true')
     calls.owner.mockRejectedValueOnce(new Error('owner unavailable'))
-    await expect(task().run({ name: 'test-scheduled-gate', context: {}, payload: { ownerUserId: 999 } })).rejects.toThrow('owner unavailable')
+    await expect(task().run({ name: 'test-scheduled-gate', context: {}, payload: { ownerUserId: 999 } })).rejects.toMatchObject({
+      name: 'OperationsTaskError', code: 'TASK_RUN_THROWN', message: 'Scheduled task failed (TASK_RUN_THROWN)',
+    })
     for (const call of [calls.materialize, calls.execute, calls.dependencies]) expect(call).not.toHaveBeenCalled()
   })
 })
