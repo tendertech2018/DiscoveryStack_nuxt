@@ -3,22 +3,22 @@ interface Props { locale: 'en' | 'zh-hant' }
 const { locale } = Astro.props
 const isZh = locale === 'zh-hant'
 const label = isZh ? {
-  title: '亞洲唯一 GEO 機器學習。', accent: '讓品牌越做越強。',
+  title: '自主研發 GEO 機器學習。', accent: '從可驗證觀察研究改善方向。',
   intro: '光看報表，客戶不會自己上門。',
-  body: '對手不會等你。DiscoveryStack 把搜尋與 AI 的觀察帶進機器學習，找出值得先改的內容；網站改了，再看結果。每一次改善，都為下一次搶先被看見累積線索。',
+  body: '對手不會等你。DiscoveryStack 將可驗證的搜尋與 AI 觀察帶入受控的機器學習研究，檢視哪些內容差異值得優先追蹤；網站改了，再觀察結果。每一次改善，都為下一次判斷累積線索。',
   principle: '對手每天都在動，你的網站不能做完就停。',
   rule: '看見訊號 → 找出機會 → 改善網站 → 驗證結果。',
   map: '學習流程示意', source: '搜尋訊號', model: '學習差別', verify: '新資料驗證', website: '改善網站',
-  description: '搜尋與 AI 的可驗證觀察進入學習模型，再用未參與學習的新資料驗證。通過驗證的方向才值得用於網站改善，之後繼續觀察。這是流程示意，並非即時模型或客戶數據。',
+  description: '這張圖示意我們如何將搜尋與 AI 的可驗證觀察用於受控研究，再以未參與學習的新資料檢查判斷。它是研究流程示意，並非即時模型、客戶數據或效果保證。',
   controls: '探索學習流程', pause: '暫停動畫', play: '播放動畫', explore: '了解 SEO／GEO',
 } : {
-  title: 'GEO machine learning.', accent: 'Built on 100,000+ real-world data points.',
+  title: 'In-house GEO machine learning.', accent: 'Research guided by verifiable observations.',
   intro: 'Reports alone do not bring customers to your door.',
-  body: 'Competitors are not waiting. DiscoveryStack brings search and AI observations into machine learning to identify the content worth improving. Make the change, check what followed, and turn each observation into a head start on the next move.',
+  body: 'Competitors are not waiting. DiscoveryStack brings verifiable search and AI observations into controlled machine-learning research to examine which content differences deserve attention first. Make the change, observe what followed, and turn each result into evidence for the next decision.',
   principle: 'The market keeps moving. Your website should, too.',
   rule: 'Observe → Find the opportunity → Improve → Verify.',
   map: 'Illustrative learning flow', source: 'Search signals', model: 'Learn differences', verify: 'Fresh-data validation', website: 'Website improvements',
-  description: 'Verifiable search and AI observations enter a learning model. Fresh data that was not used for learning tests its judgement. Validated directions can inform website improvements and further observations. This is a process illustration, not live model or customer data.',
+  description: 'This illustrates how verifiable search and AI observations can support controlled research, with fresh data checking judgements made from earlier observations. It is a research-process illustration, not a live model, customer data or a performance guarantee.',
   controls: 'Explore the learning flow', pause: 'Pause animation', play: 'Play animation', explore: 'Explore SEO / GEO',
 }
 const steps = isZh ? [

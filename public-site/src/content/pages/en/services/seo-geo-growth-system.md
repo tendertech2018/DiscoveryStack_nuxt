@@ -1,16 +1,16 @@
 ---
-title: "GEO machine learning with 100,000+ real-world data points"
-description: "Customers are asking AI while competitors fight to be the answer. DiscoveryStack connects websites, search signals and continuous improvement through GEO machine learning built on more than 100,000 real-world data points."
+title: "Evidence-led SEO and GEO machine learning"
+description: "DiscoveryStack uses in-house SEO and GEO machine learning to research website and content improvement directions from verifiable search and AI observations."
 locale: en
 translationKey: seo-geo-growth-system
 route: /en/services/seo-geo-growth-system
 primaryIntent: SEO and GEO growth services for service businesses
 cluster: Demand System
 contentRole: pillar
-updatedAt: 2026-10-05
+updatedAt: 2026-10-10
 authorStatus: editorial-team
 evidenceStatus: approved-knowledge
-summaryAnswer: "DiscoveryStack connects search and AI observations, content improvements and outcome checks through GEO machine learning built on more than 100,000 real-world data points to help brands compete for their next discovery opportunity."
+summaryAnswer: "DiscoveryStack connects verifiable search and AI observations, content improvements and outcome checks through controlled SEO and GEO machine-learning research, creating traceable evidence for the next decision."
 relatedRoutes:
   - /en/methodology/journey-intelligence
   - /en/glossary/seo

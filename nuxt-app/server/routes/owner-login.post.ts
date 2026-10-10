@@ -1,5 +1,6 @@
 import type { H3Event } from 'h3'
 import { setOwnerSession } from '../utils/auth'
+import { readBoundedRequestBody } from '../utils/bounded-request-body'
 import {
   assertSimpleLoginRequestOrigin,
   clearSimpleLoginRateLimit,
@@ -10,6 +11,7 @@ import {
   resolveSimpleLoginOpenId,
   simpleLoginPasswordMatches,
 } from '../utils/ownerSimpleLogin'
+import { PUBLIC_REQUEST_BODY_MAX_BYTES } from '../utils/publicRequestGuard'
 
 function htmlResponse(event: H3Event, status: number, message?: string) {
   setHeader(event, 'Content-Type', 'text/html; charset=utf-8')
@@ -30,7 +32,20 @@ export default defineEventHandler(async (event) => {
   const fingerprint = ownerLoginRequestFingerprint(event)
   enforceSimpleLoginRateLimit(fingerprint)
 
-  const body = await readBody(event).catch(() => null)
+  let body: unknown = null
+  try {
+    body = await readBoundedRequestBody(event, {
+      maxBytes: PUBLIC_REQUEST_BODY_MAX_BYTES,
+      oversizedMessage: 'Owner sign-in request is too large.',
+      invalidMessage: 'Owner sign-in request is invalid.',
+      invalidStatusCode: 400,
+    })
+  } catch (error) {
+    const statusCode = typeof error === 'object' && error && 'statusCode' in error
+      ? Number((error as { statusCode?: unknown }).statusCode)
+      : 0
+    if (statusCode === 413) return htmlResponse(event, 413, '登入資料過大，請縮短後再試一次。')
+  }
   const rawPassword = body && typeof body === 'object' ? (body as Record<string, unknown>).password : undefined
   const submitted = typeof rawPassword === 'string' ? rawPassword : ''
 

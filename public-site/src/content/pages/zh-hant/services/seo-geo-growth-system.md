@@ -1,16 +1,16 @@
 ---
-title: "亞洲唯一 GEO 機器學習"
-description: "客戶正在問 AI，你的對手正在搶答案。DiscoveryStack 用亞洲唯一 GEO 機器學習連接網站、搜尋訊號與持續改善，讓品牌先被看見、再被選擇。"
+title: "自主研發 SEO／GEO 機器學習"
+description: "DiscoveryStack 以自主研發的 SEO／GEO 機器學習，從可驗證的搜尋與 AI 觀察研究值得改善的網站與內容方向。"
 locale: zh-hant
 translationKey: seo-geo-growth-system
 route: /zh-hant/services/seo-geo-growth-system
 primaryIntent: 服務型企業 SEO 與 GEO 成長服務
 cluster: 需求系統
 contentRole: pillar
-updatedAt: 2026-10-05
+updatedAt: 2026-10-10
 authorStatus: editorial-team
 evidenceStatus: approved-knowledge
-summaryAnswer: "DiscoveryStack 以亞洲唯一 GEO 機器學習串起搜尋與 AI 觀察、內容改善及結果驗證，讓品牌有方向地爭取下一次被看見的機會。"
+summaryAnswer: "DiscoveryStack 將可驗證的搜尋與 AI 觀察、內容改善及結果檢查接入受控的 SEO／GEO 機器學習研究，為後續改善累積可追溯線索。"
 relatedRoutes:
   - /zh-hant/methodology/journey-intelligence
   - /zh-hant/glossary/seo
