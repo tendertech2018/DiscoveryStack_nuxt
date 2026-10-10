@@ -115,8 +115,7 @@ describe('bounded single-provider Qwen preview', () => {
 
   it('accepts a final JSON body of exactly 64 KiB and rejects one byte more', async () => {
     const bytesFor = (content: string) => Buffer.byteLength(JSON.stringify({ model: 'qwen3.6-plus', stream: false, messages: [{ role: 'user', content: buildOfficialAutoGeoPrompt({ ...document, content }, []) }], max_tokens: 2048, enable_thinking: false }), 'utf8')
-    const content = 'x'.repeat(BOUNDedBytes() - bytesFor(''))
-    function BOUNDedBytes() { return BOUNDED_QWEN_PREVIEW_LIMITS.maxRequestBytes }
+    const content = 'x'.repeat(BOUNDED_QWEN_PREVIEW_LIMITS.maxRequestBytes - bytesFor(''))
     expect(bytesFor(content)).toBe(64 * 1024)
     const acceptedFetch = providerFetch()
     await create(acceptedFetch).rewrite({ ...document, content }, [])
@@ -193,6 +192,19 @@ describe('bounded single-provider Qwen preview', () => {
   it('rejects invalid UTF-8 rather than accepting a replacement-character document', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(new Uint8Array([0xc3])))
     await expect(create(fetchMock).rewrite(document, [])).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })
+  })
+
+  it('cancels a still-open response stream immediately after fatal decoding failure', async () => {
+    const cancelled = vi.fn()
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array([0xff])) },
+      cancel: cancelled,
+    })
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(stream))
+    await expect(create(fetchMock).rewrite(document, [])).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })
+    expect(cancelled).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true)
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 
   it.each([

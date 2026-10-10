@@ -188,6 +188,9 @@ export function createBoundedQwenPreviewAdapter(options: {
       return await Promise.race([operation(), timeout])
     } catch (error) {
       transportFailure = error instanceof BoundedQwenPreviewError ? error : fail(controller.signal.aborted ? 'TIMEOUT' : 'TRANSPORT')
+      // Stop the upstream body even when validation fails before EOF (for example
+      // fatal UTF-8 decoding). Releasing a reader alone does not cancel its stream.
+      abort()
       throw transportFailure
     } finally {
       if (timer) clearTimeout(timer)
