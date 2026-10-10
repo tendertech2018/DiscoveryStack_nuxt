@@ -61,16 +61,19 @@ function acceptedEnvelope(value: unknown): {
   if (!record(choice) || choice.index !== 0 || !record(choice.message) || choice.message.role !== 'assistant') throw fail('MALFORMED_RESPONSE')
   if (choice.finish_reason === 'length') throw fail('TRUNCATED_RESPONSE')
   if (choice.finish_reason !== 'stop' || typeof choice.message.content !== 'string' || !choice.message.content.trim() || choice.message.content.includes('\u0000')) throw fail('MALFORMED_RESPONSE')
-  if (choice.message.tool_calls !== undefined || choice.message.function_call !== undefined) throw fail('MALFORMED_RESPONSE')
+  // Model Studio documents nullable optional fields for a normal text response.
+  // An absent/null/empty tool list is not a tool invocation; actual calls still fail.
+  const toolCalls = choice.message.tool_calls
+  if ((toolCalls != null && (!Array.isArray(toolCalls) || toolCalls.length !== 0)) || choice.message.function_call != null) throw fail('MALFORMED_RESPONSE')
   if (choice.message.reasoning_content !== undefined && choice.message.reasoning_content !== null && choice.message.reasoning_content !== '') throw fail('THINKING_NOT_DISABLED')
   const usage = value.usage
   if (!record(usage) || !tokenCount(usage.prompt_tokens) || !tokenCount(usage.completion_tokens) || !tokenCount(usage.total_tokens)
     || usage.prompt_tokens + usage.completion_tokens !== usage.total_tokens
     || usage.prompt_tokens > limits.maxInputTokens || usage.completion_tokens > limits.maxOutputTokens) throw fail('USAGE_INVALID')
-  if (usage.completion_tokens_details !== undefined) {
+  if (usage.completion_tokens_details != null) {
     if (!record(usage.completion_tokens_details)) throw fail('USAGE_INVALID')
     const reasoning = usage.completion_tokens_details.reasoning_tokens
-    if (reasoning !== undefined && (!tokenCount(reasoning) || reasoning !== 0)) throw fail('THINKING_NOT_DISABLED')
+    if (reasoning != null && (!tokenCount(reasoning) || reasoning !== 0)) throw fail('THINKING_NOT_DISABLED')
   }
   const cost = estimatedCostUsd(usage.prompt_tokens, usage.completion_tokens)
   if (!Number.isFinite(cost) || cost > limits.budgetUsd) throw fail('BUDGET_EXCEEDED')
