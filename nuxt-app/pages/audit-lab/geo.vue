@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { GeoRewriteProvenance } from '../../server/geo/contracts'
+import { boundedPreviewFailureMessage } from '../../utils/boundedPreviewFailure'
 
 type Metric = { id: string, label: string, before: number, after: number, delta: number, explanation: string }
 type Result = {
@@ -34,7 +35,15 @@ async function runOptimization() {
     })
     state.value = 'ready'
   }
-  catch (error: unknown) { state.value = 'error'; const status = (error as { status?: number, statusCode?: number }).status ?? (error as { statusCode?: number }).statusCode; errorMessage.value = status === 401 ? '需要 owner 工作階段。請先從私有稽核實驗室登入。' : (error as { data?: { message?: string } }).data?.message || '目前無法完成比較。輸入未被儲存。' }
+  catch (error: unknown) {
+    state.value = 'error'
+    if (isBounded) {
+      errorMessage.value = boundedPreviewFailureMessage(error)
+    } else {
+      const status = (error as { status?: number, statusCode?: number })?.status ?? (error as { statusCode?: number })?.statusCode
+      errorMessage.value = status === 401 ? '需要 owner 工作階段。請先從私有稽核實驗室登入。' : (error as { data?: { message?: string } })?.data?.message || '目前無法完成比較。輸入未被儲存。'
+    }
+  }
 }
 const deltaClass = (metric: Metric) => metric.delta > 0 ? 'metric-up' : metric.delta < 0 ? 'metric-down' : 'metric-flat'
 </script>

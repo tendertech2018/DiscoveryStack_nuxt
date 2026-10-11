@@ -1,0 +1,24 @@
+[Unit]
+Description=DiscoveryStack operator %i tick
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=discoverystack-ops
+Group=discoverystack-ops
+WorkingDirectory=/opt/discoverystack/nuxt-app
+EnvironmentFile=/etc/discoverystack/operator.env
+ExecStart=/usr/bin/node scripts/operations/operator.mjs %i-tick --execute
+StateDirectory=discoverystack-ops
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+TimeoutStartSec=45min
+TimeoutStopSec=15s
+KillMode=control-group
+# Never Restart=on-failure: an external write might already have succeeded.
+Restart=no

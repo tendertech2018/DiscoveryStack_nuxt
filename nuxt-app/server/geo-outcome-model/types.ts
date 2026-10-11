@@ -293,6 +293,10 @@ export interface ExperimentalPrediction {
 
 export interface WorkspaceSummary {
   ownerUserId: number
+  trainingReadiness?: {
+    development: TrainingReadinessCounts
+    shadow: TrainingReadinessCounts
+  }
   inventory: {
     structuralAuxiliaryCount: number
     outcomeObservationsCount: number
@@ -315,6 +319,16 @@ export interface WorkspaceSummary {
   models: ModelArtifactSummary[]
   datasetDecisions: DatasetDecisionSummary[]
   decisions: ModelDecision[]
+}
+
+export interface TrainingReadinessCounts {
+  candidates: number
+  queryGroups: number
+  websites: number
+  engines: number
+  positives: number
+  hardNegatives: number
+  observationSpanDays: number | null
 }
 
 export interface MutationClaim {

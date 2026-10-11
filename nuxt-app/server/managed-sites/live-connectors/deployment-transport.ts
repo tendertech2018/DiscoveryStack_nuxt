@@ -2,6 +2,7 @@ import { createError } from 'h3'
 import { isOpaqueReference } from '../../first-party-publishing/normalization'
 import type { ManagedSiteCredentialResolver, ManagedSiteDeploymentAdapter, ManagedSiteDeploymentReceipt } from './types'
 import { assertAllowedManagedSiteProviderOrigin } from './provider-verifiers'
+import { readBoundedManagedSiteResponse } from './hmac-broker-transport'
 
 const RECEIPT_KEYS = new Set(['providerKey', 'providerEventId', 'providerDeploymentId', 'projectId', 'versionId', 'contentHash', 'canonicalDomain', 'deploymentUrl', 'status', 'observedAt', 'payloadHash', 'providerAuthorityFingerprint', 'exactResponseIdentity'])
 
@@ -23,14 +24,22 @@ export function createAuthenticatedBearerManagedSiteDeploymentAdapter(options: {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     let response: Response
+    let text: string
     try {
       response = await fetchImpl(`${origin}/v1/managed-sites/${operation}`, { method: 'POST', redirect: 'error', signal: controller.signal, headers: { 'content-type': 'application/json', authorization: `Bearer ${credential.value}` }, body: JSON.stringify({ schemaVersion: 'discoverystack-managed-deployment-command-v1', providerKey: options.providerKey, operation, ...payload }) })
-    } catch {
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined)
+        throw Object.assign(new Error('deployment provider rejected command'), { code: response.status === 429 ? 'RATE_LIMITED' : response.status >= 500 ? 'UPSTREAM_FAILURE' : 'PROVIDER_REJECTED', retryable: response.status === 429 || response.status >= 500 })
+      }
+      if (Number(response.headers.get('content-length')) > 64_000) {
+        await response.body?.cancel().catch(() => undefined)
+        throw createError({ statusCode: 502, statusMessage: 'Deployment provider receipt exceeded the fixed response limit.' })
+      }
+      text = await readBoundedManagedSiteResponse(response, 64_000)
+    } catch (error) {
+      if ((error as { statusCode?: number })?.statusCode || ['RATE_LIMITED', 'UPSTREAM_FAILURE', 'PROVIDER_REJECTED'].includes(String((error as { code?: string })?.code))) throw error
       throw Object.assign(new Error('deployment transport failed'), { code: controller.signal.aborted ? 'TIMEOUT' : 'NETWORK_FAILURE', retryable: true })
     } finally { clearTimeout(timer) }
-    if (!response.ok) throw Object.assign(new Error('deployment provider rejected command'), { code: response.status === 429 ? 'RATE_LIMITED' : response.status >= 500 ? 'UPSTREAM_FAILURE' : 'PROVIDER_REJECTED', retryable: response.status === 429 || response.status >= 500 })
-    const text = await response.text()
-    if (Buffer.byteLength(text, 'utf8') > 64_000) throw createError({ statusCode: 502, statusMessage: 'Deployment provider receipt exceeded the fixed response limit.' })
     let parsed: unknown
     try { parsed = JSON.parse(text) } catch { throw createError({ statusCode: 502, statusMessage: 'Deployment provider returned invalid JSON.' }) }
     const receipt = boundedReceipt(parsed)

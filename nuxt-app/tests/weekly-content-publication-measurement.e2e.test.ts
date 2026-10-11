@@ -1,5 +1,5 @@
 import { createHash, createHmac } from 'node:crypto'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createGeoFlowQwenGenerationRuntime } from '../server/geoflow-runtime/qwen'
 import type { GeoRewriteAdapter } from '../server/geo/contracts'
 import { enableOwnerAutopilot } from '../server/content-operations/autopilot-service'
@@ -224,6 +224,8 @@ async function setupLineage() {
 }
 
 describe('signed LINE weekly draft to owner-confirmed measurement (isolated same-lineage integration)', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn(() => { throw new Error('External network forbidden in isolated acceptance') })))
+  afterEach(() => vi.unstubAllGlobals())
   it('keeps one server-owned lineage through receipt, signed site status and observational measurement without granting learning', async () => {
     const f = await setupLineage()
     const tickOptions = { featureEnabled: true, schedulerEnabled: true, configurationReady: true, getDependencies: () => f.runtimeDeps }
@@ -251,6 +253,10 @@ describe('signed LINE weekly draft to owner-confirmed measurement (isolated same
     expect(f.ingestTransport).toHaveBeenCalledTimes(1)
     expect(f.provider.qwenFetch).toHaveBeenCalledTimes(1)
     expect(f.operations.reviews.size).toBe(0)
+    // A new scheduler invocation after an accepted receipt must not dispatch again.
+    await runWeeklyContentTick({ ownerUserId: OWNER, clientId: CLIENT, now: WEEKLY_NOW }, { ...tickOptions, getDependencies: () => ({ ...f.runtimeDeps, runtime: { ...f.runtimeDeps.runtime } }) })
+    expect(f.ingestTransport).toHaveBeenCalledTimes(1)
+    expect(f.provider.qwenFetch).toHaveBeenCalledTimes(1)
     const attempt = f.operations.attempts[0]!
     const authorization = f.operations.machineAuthorizations[0]!
     expect(attempt).toMatchObject({ entryId: f.entry.id, targetId: f.target.id, contentHash: request.contentHash,
@@ -312,6 +318,15 @@ describe('signed LINE weekly draft to owner-confirmed measurement (isolated same
       assessmentSnapshot: { evidenceKind: 'site_publication_confirmation', learningCandidate: false } })
     const dataset = await buildOwnerContentLearningDataset(OWNER, f.operations.repository)
     expect(JSON.stringify(dataset)).not.toContain(f.operations.outcomes[0]!.publicationReceiptFingerprint!)
+    const snapshotsBeforeFailure = measured.snapshots.length
+    const outcomesBeforeFailure = f.operations.outcomes.length
+    googleFetcher.mockImplementationOnce(async () => new Response('synthetic upstream private body', { status: 503 }))
+    const failedMeasurement = await processMeasurementRun(OWNER, scheduled.runs[1]!.id, measurementDependencies)
+    expect(failedMeasurement.run.state).toBe('retry_wait')
+    expect(failedMeasurement.assessment).toBeNull()
+    expect(measured.snapshots).toHaveLength(snapshotsBeforeFailure)
+    expect(f.operations.outcomes).toHaveLength(outcomesBeforeFailure)
+    expect(JSON.stringify(failedMeasurement)).not.toContain('synthetic upstream private body')
 
     const expectAuthorityInvalid = async () => expect(
       await projectSiteMeasurement(OWNER, f.entry.id, f.target.id, measurementOptions),
@@ -362,5 +377,66 @@ describe('signed LINE weekly draft to owner-confirmed measurement (isolated same
 
     authorization.revokedAt = SITE_NOW
     await expectAuthorityInvalid()
+  })
+
+  async function prepareAndApprove() {
+    const f = await setupLineage()
+    const options = { featureEnabled: true, schedulerEnabled: true, configurationReady: true, getDependencies: () => f.runtimeDeps }
+    await runWeeklyContentTick({ ownerUserId: OWNER, clientId: CLIENT, now: WEEKLY_NOW }, options)
+    const request = f.weekly.state.requests[0]!
+    expect(request).toBeTruthy()
+    const actionToken = deriveReviewTokens(request, WEEKLY_KEY).actionToken
+    const event = { type: 'postback', mode: 'active', timestamp: WEEKLY_NOW.getTime(), source: { type: 'user', userId: LINE_USER }, webhookEventId: '01FZ74A0TDDPYRVKNK77XKC3ZS', postback: { data: encodeWeeklyLinePostback(request.requestId, actionToken, 'approved') } }
+    await processWeeklyLineWebhook({ ...lineWebhookOptions(f.weekly), ...signedLine([event]) })
+    return { ...f, options, request, event }
+  }
+
+  it.each(['consent_revoked', 'consent_expired', 'content_changed', 'target_changed', 'binding_revoked', 'policy_revoked'])('stops %s after a real synthetic signed approval and before transport', async kind => {
+    const f = await prepareAndApprove()
+    if (kind === 'consent_revoked') f.request.status = 'revoked'
+    if (kind === 'consent_expired') f.request.expiresAt = WEEKLY_NOW
+    if (kind === 'content_changed') f.request.contentHash = 'f'.repeat(64)
+    if (kind === 'target_changed') f.target.configurationFingerprint = 'f'.repeat(64)
+    if (kind === 'binding_revoked') f.weekly.state.binding!.status = 'revoked'
+    if (kind === 'policy_revoked') f.policy.status = 'revoked'
+    await runWeeklyContentTick({ ownerUserId: OWNER, clientId: CLIENT, now: WEEKLY_NOW }, f.options)
+    expect(f.ingestTransport).not.toHaveBeenCalled()
+    expect(f.operations.outcomes).toHaveLength(0)
+  })
+
+  it('does not publish while waiting for approval or after an invalid LINE signature', async () => {
+    const f = await setupLineage()
+    const options = { featureEnabled: true, schedulerEnabled: true, configurationReady: true, getDependencies: () => f.runtimeDeps }
+    await runWeeklyContentTick({ ownerUserId: OWNER, clientId: CLIENT, now: WEEKLY_NOW }, options)
+    const request = f.weekly.state.requests[0]!
+    const tokens = deriveReviewTokens(request, WEEKLY_KEY)
+    const event = { type: 'postback', mode: 'active', timestamp: WEEKLY_NOW.getTime(), source: { type: 'user', userId: LINE_USER }, webhookEventId: '01FZ74A0TDDPYRVKNK77XKC3ZS', postback: { data: encodeWeeklyLinePostback(request.requestId, tokens.actionToken, 'approved') } }
+    await expect(processWeeklyLineWebhook({ ...lineWebhookOptions(f.weekly), ...signedLine([event]), signature: 'invalid-signature' })).rejects.toMatchObject({ statusCode: 401 })
+    const waiting = await runWeeklyContentTick({ ownerUserId: OWNER, clientId: CLIENT, now: WEEKLY_NOW }, options)
+    expect(waiting.clients).toContainEqual({ clientId: CLIENT, status: 'awaiting_customer' })
+    expect(f.ingestTransport).not.toHaveBeenCalled()
+    expect(f.provider.qwenFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not regenerate or blindly redispatch after an ambiguous first-party send failure', async () => {
+    const f = await prepareAndApprove()
+    vi.mocked(f.ingestTransport).mockRejectedValueOnce(new Error('synthetic response lost after acceptance'))
+    await runWeeklyContentTick({ ownerUserId: OWNER, clientId: CLIENT, now: WEEKLY_NOW }, f.options)
+    const afterFailure = f.operations.attempts.length
+    await runWeeklyContentTick({ ownerUserId: OWNER, clientId: CLIENT, now: new Date(WEEKLY_NOW.getTime() + 600_000) }, { ...f.options, getDependencies: () => ({ ...f.runtimeDeps }) })
+    expect(f.ingestTransport).toHaveBeenCalledTimes(1)
+    expect(f.provider.qwenFetch).toHaveBeenCalledTimes(1)
+    expect(f.operations.attempts).toHaveLength(afterFailure)
+    expect(f.operations.outcomes).toHaveLength(0)
+  })
+
+  it.each(['malformed', 'unauthorized', 'timeout'])('does not queue review or publication after %s generation', async kind => {
+    const f = await setupLineage()
+    if (kind === 'timeout') f.provider.qwenFetch.mockRejectedValue(new Error('synthetic timeout'))
+    else f.provider.qwenFetch.mockImplementation(async () => new Response(kind === 'malformed' ? '{invalid json' : 'synthetic-secret', { status: kind === 'unauthorized' ? 401 : 200 }))
+    await runWeeklyContentTick({ ownerUserId: OWNER, clientId: CLIENT, now: WEEKLY_NOW }, { featureEnabled: true, schedulerEnabled: true, configurationReady: true, getDependencies: () => f.runtimeDeps })
+    expect(f.weekly.state.requests).toHaveLength(0)
+    expect(f.ingestTransport).not.toHaveBeenCalled()
+    expect(f.operations.outcomes).toHaveLength(0)
   })
 })

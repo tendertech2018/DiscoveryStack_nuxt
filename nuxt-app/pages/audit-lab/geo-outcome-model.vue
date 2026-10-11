@@ -154,6 +154,7 @@ async function runCycle() { modelOpsSaving.value = true; modelOpsSuccess.value =
     <section v-else-if="isUnauthorized" class="state-card state-card--blocked"><strong>Unauthorized · owner-only</strong><span>這個工作台只接受既有 owner session，不會接受 browser 提交的 owner ID。</span></section>
     <section v-else-if="error" class="state-card state-card--error"><strong>Error · workspace unavailable</strong><span>{{ error.message || '目前無法載入 workspace。' }}</span><small>若尚未配置 private administration 或 durable database，狀態會 fail closed；不會以假資料代替。</small></section>
     <template v-else-if="workspace">
+      <GeoTrainingReadiness :workspace="workspace" />
       <GeoObservationAdmission @changed="refresh(); refreshModelOps()" />
       <section class="section-block modelops-shell">
         <div class="section-heading"><div><p class="eyebrow">MODEL OPS AUTOMATION V1</p><h2>Governed owner workbench</h2></div><span class="status status--neutral">{{ modelOps?.policy?.autonomousExecutionEnabled ? 'EXPERIMENTAL AUTONOMOUS' : 'OWNER GATED · NO PRODUCTION MODEL' }}</span></div>

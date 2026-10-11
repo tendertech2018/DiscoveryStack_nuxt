@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import ts from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
+import { operationsConfigurationPreflight } from '../server/operations/configuration-preflight'
+import { buildOperationsAlertPlan } from '../server/operations/alert-plan'
 
 // Compile the real SFC using Nuxt's installed Vue toolchain. A memory renderer
 // exercises component state/events without adding a second DOM implementation.
@@ -57,7 +59,7 @@ const report = () => ({
     { name: 'weekly-content:tick', cron: '*/5 * * * *', feature: { enabled: true }, status: 'healthy', heartbeat: null },
     { name: 'content-operations:measurement-tick', cron: '*/30 * * * *', feature: { enabled: true }, status: 'running_unproven', heartbeat: null },
     { name: 'learning-loop:tick', cron: '*/5 * * * *', feature: { enabled: false }, status: 'disabled', heartbeat: null },
-  ] }, limitations: [],
+  ] }, limitations: [], configuration: operationsConfigurationPreflight({}), alertPlan: buildOperationsAlertPlan(false, []), taskLifecycle: { draining: false, activeRuns: 0 },
 })
 const settle = async () => { await Promise.resolve(); await vue.nextTick(); await Promise.resolve(); await vue.nextTick() }
 
@@ -69,6 +71,10 @@ describe('operations page component behavior', () => {
       await settle()
       expect(fetcher).toHaveBeenCalledWith('/api/operations/readiness')
       expect(contents(root)).toContain('與程式一致')
+      expect(contents(root)).toContain('正式開通前的設定預檢')
+      expect(contents(root)).toContain('DATABASE_URL_MISSING')
+      expect(contents(root)).toContain('本頁不會寄送通知')
+      expect(contents(root)).toContain('外部監測工具須在獨立主機設定並啟用')
       expect(contents(root)).toContain('執行中，等待成功紀錄')
       const select = all(root).find(item => item.type === 'select')!
       select.props['onUpdate:modelValue']('attention')

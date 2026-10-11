@@ -5,6 +5,7 @@ import type { WorkspaceSummary } from "~/server/geo-outcome-model/types";
 import type { getContentEffectModelWorkspace } from "~/server/learning-loop/effect-service";
 import LivePublicationActionsPanel from "~/components/owner/LivePublicationActionsPanel.vue";
 import OwnerSiteLearningAdmission from "~/components/OwnerSiteLearningAdmission.vue";
+import OwnerDraftAdvice from "~/components/OwnerDraftAdvice.vue";
 
 definePageMeta({ layout: "owner" });
 useHead({
@@ -102,16 +103,6 @@ const training = reactive({
   datasetManifestId: "",
   modelFamily: "regularized_logistic_baseline_v1",
 });
-const advice = reactive({ entryId: 0, artifactId: "" });
-const draftEntries = computed(
-  () => content.data.value?.entries.filter(entry => entry.draftId) || []
-);
-const shadowModels = computed(
-  () =>
-    models.value?.models.filter(
-      item => item.status === "approved_for_shadow" && !item.fallbackOnly
-    ) || []
-);
 const fallbackModels = computed(
   () => models.value?.models.filter(item => item.fallbackOnly) || []
 );
@@ -1023,63 +1014,7 @@ async function approveFallback(artifactId: string) {
           引用，也不保證排名或收入。
         </p>
       </section>
-      <section class="panel" aria-label="目前草稿的模型建議">
-        <p class="eyebrow">EXACT DRAFT · EXPERIMENTAL ADVICE</p>
-        <h2>把通過驗證的模型用在目前草稿</h2>
-        <p>
-          只讀取系統裡的同一份草稿，以仍有效的學習授權及已核准影子模型產出建議。缺少的特徵保持未知；這不是市場排名、不會改寫文章，也不會代替
-          LINE 確認。
-        </p>
-        <p v-if="content.error.value" class="error">
-          目前無法讀取正式草稿，請確認資料庫與權限。
-        </p>
-        <p
-          v-else-if="!draftEntries.length || !shadowModels.length"
-          class="empty"
-        >
-          需要正式草稿及已核准的影子模型。新模型仍須完成資料、成效及回退驗證，不能直接套用。
-        </p>
-        <form
-          class="form-grid"
-          @submit.prevent="
-            action(
-              '/api/interventions/closed-loop/draft-advice',
-              { ...advice },
-              '已產出這份草稿的實驗性建議，請查看下方結果與未知特徵。'
-            )
-          "
-        >
-          <label
-            >目前草稿<select v-model.number="advice.entryId" required>
-              <option :value="0">選擇草稿</option>
-              <option
-                v-for="entry in draftEntries"
-                :key="entry.id"
-                :value="entry.id"
-              >
-                #{{ entry.id }} · {{ entry.topicCluster }} ·
-                {{ label(entry.status) }}
-              </option>
-            </select></label
-          ><label
-            >已核准影子模型<select v-model="advice.artifactId" required>
-              <option value="">選擇模型</option>
-              <option
-                v-for="item in shadowModels"
-                :key="item.artifactId"
-                :value="item.artifactId"
-              >
-                {{ item.artifactId }}
-              </option>
-            </select></label
-          ><button
-            type="submit"
-            :disabled="busy || !advice.entryId || !advice.artifactId"
-          >
-            產出目前草稿的模型建議
-          </button>
-        </form>
-      </section>
+      <OwnerDraftAdvice :entries="content.data.value?.entries || []" :models="models?.models || []" :load-error="Boolean(content.error.value || model.error.value)" />
     </template>
     <section
       v-if="workspace && !error && !pending"

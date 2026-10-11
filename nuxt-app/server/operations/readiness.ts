@@ -1,6 +1,7 @@
 import mysql, { type Connection, type RowDataPacket } from 'mysql2/promise'
 import { DRIZZLE_MIGRATION_MANIFEST } from './migration-manifest.generated'
 import { resolveOperationsReleaseIdentity, type OperationsReleaseIdentity } from './release'
+import { readinessTimeoutMs, SafeDatabaseProbeError, safeDatabaseFailureCode, type DatabaseProbeStage } from './database-diagnostics'
 
 export type MigrationLedgerRow = { hash: unknown, created_at: unknown }
 
@@ -27,24 +28,16 @@ export type RuntimeReadiness = {
   durationMs: number
   timeoutMs: number
   releaseCheck: { status: 'pass' | 'fail', reasonCode: string | null }
-  database: { status: 'pass' | 'fail', reasonCode: string | null }
+  database: { status: 'pass' | 'fail', reasonCode: string | null, stage?: DatabaseProbeStage }
   migrations: MigrationLedgerAssessment | { status: 'not_checked', reasonCode: string }
 }
 
 const DEFAULT_TIMEOUT_MS = 2_000
-const MIN_TIMEOUT_MS = 250
-const MAX_TIMEOUT_MS = 5_000
 
 class ReadinessTimeoutError extends Error {}
 
 function destroyConnection(connection: Connection | null) {
   if (connection) connection.destroy()
-}
-
-function configuredTimeout(environment: Record<string, string | undefined>): number {
-  const parsed = Number(environment.NUXT_OPERATIONS_READINESS_TIMEOUT_MS)
-  if (!Number.isFinite(parsed)) return DEFAULT_TIMEOUT_MS
-  return Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, Math.round(parsed)))
 }
 
 function normalizeCreatedAt(value: unknown): number | null {
@@ -102,19 +95,24 @@ export async function readDatabaseProbeEvidence(timeoutMs = DEFAULT_TIMEOUT_MS):
 
   let connection: Connection | null = null
   let cancelled = false
-  const url = new URL(databaseUrl)
-  url.searchParams.set('connectTimeout', String(timeoutMs))
-  const connecting = mysql.createConnection(url.toString()).then((created) => {
-    connection = created
-    if (cancelled) created.destroy()
-    return created
-  })
-
+  let stage: DatabaseProbeStage = 'configuration'
   try {
+    const url = new URL(databaseUrl)
+    if (url.protocol !== 'mysql:' || !url.hostname || !url.username || url.pathname.length < 2 || url.hash) throw new Error('Invalid database configuration')
+    url.searchParams.set('connectTimeout', String(timeoutMs))
+    stage = 'connect'
+    const connecting = mysql.createConnection(url.toString()).then((created) => {
+      connection = created
+      if (cancelled) created.destroy()
+      return created
+    })
     return await withTimeout(async () => {
       const active = await connecting
+      if (cancelled) throw new ReadinessTimeoutError('READINESS_TIMEOUT')
+      stage = 'health'
       const [healthRows] = await active.query<RowDataPacket[]>({ sql: 'SELECT 1 AS healthy', timeout: timeoutMs })
       if (Number(healthRows[0]?.healthy) !== 1) throw new Error('DATABASE_HEALTH_RESULT_INVALID')
+      stage = 'ledger'
       const [ledgerRows] = await active.query<RowDataPacket[]>({
         sql: 'SELECT hash, created_at FROM `__drizzle_migrations` ORDER BY created_at ASC, id ASC',
         timeout: timeoutMs,
@@ -124,6 +122,8 @@ export async function readDatabaseProbeEvidence(timeoutMs = DEFAULT_TIMEOUT_MS):
       cancelled = true
       destroyConnection(connection)
     })
+  } catch (error) {
+    throw new SafeDatabaseProbeError(error instanceof ReadinessTimeoutError ? 'DATABASE_CHECK_TIMEOUT' : stage === 'configuration' ? 'DATABASE_CONFIGURATION_INVALID' : safeDatabaseFailureCode(error, stage), stage)
   } finally {
     cancelled = true
     destroyConnection(connection)
@@ -156,19 +156,19 @@ export async function evaluateRuntimeReadiness(options: {
   const now = options.now || (() => new Date())
   const checkedAt = now()
   const startedAtMs = Date.now()
-  const timeoutMs = options.timeoutMs ?? configuredTimeout(options.environment || process.env)
+  const timeoutMs = options.timeoutMs ?? readinessTimeoutMs(options.environment || process.env)
   const release = options.release || resolveOperationsReleaseIdentity('', options.environment || process.env)
   const releaseCheck = release.commit
     ? { status: 'pass' as const, reasonCode: null }
     : { status: 'fail' as const, reasonCode: 'RELEASE_COMMIT_UNAVAILABLE' }
-  const notChecked = (reasonCode: string): RuntimeReadiness => ({
+  const notChecked = (reasonCode: string, stage?: DatabaseProbeStage): RuntimeReadiness => ({
     status: 'not_ready',
     release,
     checkedAt: checkedAt.toISOString(),
     durationMs: Math.max(0, Date.now() - startedAtMs),
     timeoutMs,
     releaseCheck,
-    database: { status: 'fail', reasonCode },
+    database: { status: 'fail', reasonCode, ...(stage ? { stage } : {}) },
     migrations: { status: 'not_checked', reasonCode },
   })
 
@@ -190,6 +190,7 @@ export async function evaluateRuntimeReadiness(options: {
       migrations,
     }
   } catch (error) {
+    if (error instanceof SafeDatabaseProbeError) return notChecked(error.reasonCode, error.stage)
     return notChecked(error instanceof ReadinessTimeoutError ? 'DATABASE_CHECK_TIMEOUT' : 'DATABASE_QUERY_FAILED')
   }
 }

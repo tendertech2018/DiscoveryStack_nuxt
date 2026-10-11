@@ -1,4 +1,5 @@
 import type { OperationsTaskName } from './task-catalog'
+import { operationsTaskLifecycle } from './task-lifecycle'
 
 export type TaskHeartbeatOutcome = 'success' | 'failure' | 'disabled'
 
@@ -68,10 +69,18 @@ function resultStatus(value: unknown, depth = 0): string | null {
 }
 
 export function classifyTaskOutcome(value: unknown): { outcome: TaskHeartbeatOutcome, reasonCode: string | null } {
+  if (hasReportedFailures(value)) return { outcome: 'failure', reasonCode: 'TASK_PARTIAL_FAILURE' }
   const status = resultStatus(value)
   if (status === 'disabled') return { outcome: 'disabled', reasonCode: 'TASK_FEATURE_DISABLED' }
   if (status && FAILURE_STATUSES.has(status)) return { outcome: 'failure', reasonCode: `TASK_${status.toUpperCase()}` }
   return { outcome: 'success', reasonCode: null }
+}
+
+function hasReportedFailures(value: unknown, depth = 0): boolean {
+  if (depth > 3 || !value || typeof value !== 'object') return false
+  const row = value as Record<string, unknown>
+  const counts = row.counts && typeof row.counts === 'object' ? row.counts as Record<string, unknown> : null
+  return [row.failed, counts?.failed].some(count => typeof count === 'number' && Number.isFinite(count) && count > 0) || hasReportedFailures(row.result, depth + 1)
 }
 
 function completeHeartbeat(taskName: OperationsTaskName, startedAtMs: number, outcome: TaskHeartbeatOutcome, reasonCode: string | null, now: () => Date) {
@@ -91,25 +100,27 @@ export async function runOperationsTask<T>(
   run: () => Promise<T> | T,
   options: { now?: () => Date } = {},
 ): Promise<T> {
-  const now = options.now || (() => new Date())
-  const heartbeat = heartbeatFor(taskName)
-  const startedAt = now()
-  const startedAtMs = startedAt.getTime()
-  heartbeat.activeRuns += 1
-  heartbeat.lastStartedAt = startedAt.toISOString()
+  return operationsTaskLifecycle.run(async () => {
+    const now = options.now || (() => new Date())
+    const heartbeat = heartbeatFor(taskName)
+    const startedAt = now()
+    const startedAtMs = startedAt.getTime()
+    heartbeat.activeRuns += 1
+    heartbeat.lastStartedAt = startedAt.toISOString()
 
-  try {
-    const result = await run()
-    const classified = classifyTaskOutcome(result)
-    completeHeartbeat(taskName, startedAtMs, classified.outcome, classified.reasonCode, now)
-    return result
-  } catch {
-    completeHeartbeat(taskName, startedAtMs, 'failure', 'TASK_RUN_THROWN', now)
-    // Nitro logs rejected task errors, including enumerable fields and nested causes.
-    // Preserve failure semantics without forwarding SQL, params, provider data or secrets.
-    // Do not replay a task: an external side effect may already have completed.
-    throw new OperationsTaskError()
-  }
+    try {
+      const result = await run()
+      const classified = classifyTaskOutcome(result)
+      completeHeartbeat(taskName, startedAtMs, classified.outcome, classified.reasonCode, now)
+      return result
+    } catch {
+      completeHeartbeat(taskName, startedAtMs, 'failure', 'TASK_RUN_THROWN', now)
+      // Nitro logs rejected task errors, including enumerable fields and nested causes.
+      // Preserve failure semantics without forwarding SQL, params, provider data or secrets.
+      // Do not replay a task: an external side effect may already have completed.
+      throw new OperationsTaskError()
+    }
+  })
 }
 
 export function getTaskHeartbeatSnapshot(): { processStartedAt: string, heartbeats: TaskHeartbeat[] } {
