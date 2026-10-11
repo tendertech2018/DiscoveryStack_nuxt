@@ -51,7 +51,9 @@ async function adviceFixture() {
   const hash = contentFingerprint(title, body)
   const lineage = { client: { id: 2, ownerUserId: 1, canonicalSiteOrigin: 'https://client.acme.taipei' }, entry: { id: 17, ownerUserId: 1, contentHash: hash, contentType: 'article', language: 'en', evidenceSnapshotHash: 'e'.repeat(64) }, draft: { id: 29, version: 1, title, body, contentHash: hash }, deliverable: { opportunityKey: 'synthetic-opportunity' } }
   const operations = { resolveWorkspaceEntry: vi.fn(async () => structuredClone(lineage)) } as any
-  return { ...f, models, operations, lineage, input: { entryId: 17, artifactId } }
+  const available = await getDraftLearningAdvice(1, { entryId: 17, artifactId }, { operations, learning: f.repository, models, now: f.now })
+  if (available.status !== 'context_required') throw new Error('Synthetic dataset should require an explicit engine context')
+  return { ...f, models, operations, lineage, input: { entryId: 17, artifactId, contextFingerprint: available.contexts[0]!.fingerprint } }
 }
 
 describe('real deterministic model stages through the closed-loop entrypoint', () => {
@@ -84,12 +86,38 @@ describe('hash-bound draft advice never acts as publication or observed truth', 
   it('scores a server-read exact draft, reports missing features and changes no content/labels', async () => {
     const f = await adviceFixture(), before = await f.models.listObservations(1)
     const result = await getDraftLearningAdvice(1, f.input, { operations: f.operations, learning: f.repository, models: f.models, now: f.now })
+    if (result.status !== 'ready') throw new Error('Expected selected-context advice')
     expect(result).toMatchObject({ entryId: 17, draftId: 29, contentHash: f.lineage.draft.contentHash, predictionIsVerifiedOutcome: false, publicationAuthorization: false, productionModelActivation: false })
     expect(result.experimentalScore).toBeGreaterThanOrEqual(0); expect(result.experimentalScore).toBeLessThanOrEqual(1)
     expect(result.missingFeatureList.length).toBeGreaterThan(0)
     expect(result.featureContributions.every(row => !result.missingFeatureList.includes(row.key))).toBe(true)
     expect(await f.models.listObservations(1)).toEqual(before)
     expect(JSON.stringify(result)).not.toContain(f.lineage.draft.title)
+    expect(result).toMatchObject({ crossDraftRankingAllowed: false, contextIsObservedForDraft: false, contextSource: 'owner_selected_dataset_context', representedContext: { locale: 'en', region: 'US', fingerprint: f.input.contextFingerprint } })
+    expect(result.reviewSuggestions.some(row => row.basis === 'missing_data')).toBe(true)
+  })
+  it('requires explicit engine selection without scoring, and rejects unrepresented language or invented contexts', async () => {
+    const f = await adviceFixture(), scoreRead = vi.spyOn(f.models, 'listObservations')
+    const deps = { operations: f.operations, learning: f.repository, models: f.models, now: f.now }
+    const result = await getDraftLearningAdvice(1, { entryId: 17, artifactId }, deps)
+    expect(result.status).toBe('context_required')
+    if (result.status !== 'context_required') throw new Error('Expected contexts')
+    expect(result.contexts).toHaveLength(3)
+    expect(scoreRead).not.toHaveBeenCalled()
+    expect(result).not.toHaveProperty('experimentalScore')
+    await expect(getDraftLearningAdvice(1, { ...f.input, contextFingerprint: 'f'.repeat(64) }, deps)).rejects.toMatchObject({ data: { code: 'ADVICE_CONTEXT_CHANGED' } })
+    f.lineage.entry.language = 'zh-hant'
+    await expect(getDraftLearningAdvice(1, f.input, deps)).rejects.toMatchObject({ data: { code: 'ADVICE_LANGUAGE_NOT_REPRESENTED' } })
+    await expect(getDraftLearningAdvice(99, f.input, deps)).rejects.toMatchObject({ data: { code: 'EXACT_DRAFT_REQUIRED' } })
+  })
+  it('rechecks current consent even before offering context choices', async () => {
+    const f = await adviceFixture()
+    let reads = 0
+    f.operations.resolveWorkspaceEntry = vi.fn(async () => {
+      if (++reads === 2) await f.repository.revokeAuthorization(1, 1, f.now)
+      return structuredClone(f.lineage)
+    })
+    await expect(getDraftLearningAdvice(1, { entryId: 17, artifactId }, { operations: f.operations, learning: f.repository, models: f.models, now: f.now })).rejects.toMatchObject({ data: { code: 'ADVICE_LINEAGE_CHANGED' } })
   })
   it('blocks advice if the bound fallback is revoked during post-prediction draft revalidation', async () => {
     const f = await adviceFixture()

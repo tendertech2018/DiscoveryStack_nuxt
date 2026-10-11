@@ -442,7 +442,7 @@ export async function rollbackManagedSiteRelease(ownerUserId: number, input: { f
   }
   const pendingFromProjectionFingerprint = pendingFrom.projectionFingerprint
   try {
-    const result = await adapter.rollback({ projectId: from.projectId, fromReleaseId: from.id, toReleaseId: to.id, versionId: to.versionId, contentHash: to.contentHash, canonicalDomain: to.canonicalDomain, priorDeploymentReceiptFingerprint: priorReceipt.receiptFingerprint, providerAuthority, requestFingerprint, timeoutMs: DEPLOYMENT_TIMEOUT_MS })
+    const result = await adapter.rollback({ ownerUserId, projectId: from.projectId, fromReleaseId: from.id, toReleaseId: to.id, versionId: to.versionId, contentHash: to.contentHash, canonicalDomain: to.canonicalDomain, priorDeploymentReceiptFingerprint: priorReceipt.receiptFingerprint, providerAuthority, requestFingerprint, timeoutMs: DEPLOYMENT_TIMEOUT_MS })
     validateDeploymentReceipt(result, { providerKey: providerAuthority.providerKey, providerAuthorityFingerprint: providerAuthority.authorityFingerprint, projectId: to.projectId, versionId: to.versionId, contentHash: to.contentHash, canonicalDomain: to.canonicalDomain, status: 'rollback_verified' })
     const receiptFingerprint = stableFingerprint({ ownerUserId, requestFingerprint, result })
     const { target, receipt } = await repository.transaction(async transaction => {

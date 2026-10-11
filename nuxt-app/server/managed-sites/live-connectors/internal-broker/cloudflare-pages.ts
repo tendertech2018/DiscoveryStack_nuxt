@@ -209,3 +209,57 @@ export async function deployCloudflarePagesProduction(input: { ownerUserId: numb
   remaining()
   return { deploymentId, deploymentUrl: `https://${input.canonicalDomain}/`, projectName }
 }
+
+/** Restore only an existing verified production deployment. Never upload, create a project or change DNS. */
+export async function rollbackCloudflarePagesProduction(input: { ownerUserId: number; projectId: number; toReleaseId: number; canonicalDomain: string; sourceDeploymentId: string; targetDeploymentId: string; targetRequestFingerprint: string; timeoutMs: number }, options: CloudflarePagesOptions & { beforeMutation: () => Promise<void>; productionProbe?: ManagedSiteProductionProbe }): Promise<{ deploymentId: string; deploymentUrl: string; projectName: string }> {
+  const now = options.now || Date.now
+  const deadline = now() + Math.max(1, Math.min(input.timeoutMs - 1_000, 28_000))
+  const remaining = () => { const value = deadline - now(); if (value <= 0) throw cloudflareError(503, 'Rollback verification exceeded its bounded budget.'); return value }
+  if (![input.sourceDeploymentId, input.targetDeploymentId].every(id => /^[A-Za-z0-9_-]{3,160}$/u.test(id)) || input.sourceDeploymentId === input.targetDeploymentId || !/^[a-f0-9]{64}$/u.test(input.targetRequestFingerprint)) throw cloudflareError(422, 'Rollback deployment identity is invalid.')
+  const projectName = managedSitePagesProjectName(options.projectPrefix, input.ownerUserId, input.projectId)
+  const base = `${API_ORIGIN}/client/v4/accounts/${options.accountId}/pages/projects/${projectName}`
+  const get = async (path: string) => {
+    const result = await request(options.fetchImpl, `${base}${path}`, { method: 'GET', headers: bearer(options.apiToken) }, remaining())
+    if (!result.response.ok) throw cloudflareError(result.response.status, 'Rollback provider authority lookup failed.')
+    return resultObject(result.envelope)
+  }
+  const project = await get('')
+  if (project.name !== projectName || typeof project.id !== 'string' || !project.id || project.production_branch !== 'main') throw cloudflareError(409, 'Rollback project identity is mismatched.')
+  const expected = { projectName, projectId: project.id, marker: `discoverystack-production:r${input.toReleaseId}:${input.targetRequestFingerprint}`, deploymentId: input.targetDeploymentId }
+  const target = await get(`/deployments/${encodeURIComponent(input.targetDeploymentId)}`)
+  productionIdentity(target, expected)
+  if (!deploymentReady(target)) throw cloudflareError(409, 'Rollback target is not a successful production deployment.')
+  const verifyDomain = async () => {
+    const domain = await get(`/domains/${encodeURIComponent(input.canonicalDomain)}`)
+    if (domain.name !== input.canonicalDomain || domain.status !== 'active' || domain.validation_data?.status !== 'active' || domain.verification_data?.status !== 'active') throw cloudflareError(409, 'Rollback domain DNS/TLS authority is not active.')
+  }
+  await verifyDomain()
+  const probe = options.productionProbe || ((domain: string, timeoutMs: number, pathname = '/') => probeManagedSiteProductionPath(domain, pathname, timeoutMs))
+  const targetHost = new URL(target.url).hostname
+  // A project alias is mutable and cannot prove the historical target's bytes.
+  if (targetHost === `${projectName}.pages.dev`) throw cloudflareError(409, 'Rollback requires an immutable deployment URL.')
+  const expectedPage = await probe(targetHost, Math.min(5_000, remaining()))
+  const validPage = (value: Awaited<ReturnType<ManagedSiteProductionProbe>>) => value.status === 200 && /^text\/html(?:\s*;|$)/iu.test(value.contentType) && value.body.length > 0 && Buffer.byteLength(value.body, 'utf8') <= MAX_MANAGED_SITE_PRODUCTION_HTML_BYTES
+  if (!validPage(expectedPage)) throw cloudflareError(503, 'Rollback target homepage could not be verified.')
+  await options.beforeMutation()
+  const before = await get('')
+  if (before.id !== project.id || before.name !== projectName || before.production_branch !== 'main') throw cloudflareError(409, 'Rollback project changed before mutation.')
+  const currentId = before.canonical_deployment?.id
+  if (currentId !== input.sourceDeploymentId && currentId !== input.targetDeploymentId) throw cloudflareError(409, 'Rollback refused because the live deployment changed.')
+  if (currentId !== input.targetDeploymentId) {
+    await options.beforeMutation()
+    const rolled = await request(options.fetchImpl, `${base}/deployments/${encodeURIComponent(input.targetDeploymentId)}/rollback`, { method: 'POST', headers: bearer(options.apiToken) }, remaining())
+    if (!rolled.response.ok) throw cloudflareError(rolled.response.status, 'Cloudflare rollback was not accepted.')
+    productionIdentity(resultObject(rolled.envelope), expected)
+  }
+  await verifyDomain()
+  const active = await get('')
+  if (active.id !== project.id || active.name !== projectName || active.production_branch !== 'main') throw cloudflareError(409, 'Rollback project changed after mutation.')
+  productionIdentity(active.canonical_deployment || {}, expected)
+  if (!deploymentReady(active.canonical_deployment)) throw cloudflareError(503, 'Rollback target has not become the successful canonical deployment.')
+  const observed = await probe(input.canonicalDomain, Math.min(5_000, remaining()))
+  if (!validPage(observed) || observed.body !== expectedPage.body) throw cloudflareError(503, 'Rollback canonical homepage does not match the verified target.')
+  await options.beforeMutation()
+  remaining()
+  return { deploymentId: input.targetDeploymentId, deploymentUrl: `https://${input.canonicalDomain}/`, projectName }
+}

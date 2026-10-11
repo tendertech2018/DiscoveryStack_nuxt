@@ -1,0 +1,10 @@
+[Unit]
+Description=Check DiscoveryStack health every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Unit=discoverystack-ops@monitor.service
+
+[Install]
+WantedBy=timers.target

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { describe, expect, it, vi } from 'vitest'
 import { transpileModule, ModuleKind, ScriptTarget } from 'typescript'
+import * as draftAdviceClient from '../utils/draftAdvice'
 
 // Compile and render the actual page with Nuxt's installed Vue, not a string-only mock UI.
 const localRequire = createRequire(import.meta.url), nuxtRequire = createRequire(localRequire.resolve('nuxt/package.json'))
@@ -23,6 +24,10 @@ const admission = parse(readFileSync(admissionPath, 'utf8'), { filename: admissi
 if (admission.errors.length) throw new Error('Owner site-learning admission component did not parse.')
 const admissionCompiled = compileScript(admission.descriptor, { id: 'learning-loop-site-admission-render-test', inlineTemplate: true, templateOptions: { ssr: true } })
 const admissionJs = transpileModule(admissionCompiled.content, { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText
+const advicePath = new URL('../components/OwnerDraftAdvice.vue', import.meta.url)
+const adviceParsed = parse(readFileSync(advicePath, 'utf8'), { filename: advicePath.pathname })
+const adviceCompiled = compileScript(adviceParsed.descriptor, { id: 'draft-advice-render', inlineTemplate: true, templateOptions: { ssr: true } })
+const adviceJs = transpileModule(adviceCompiled.content, { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText
 
 async function render(failure?: { statusCode: number; message: string }, effectFixture?: unknown, modelFixture?: unknown) {
   const workspace = { configuration: { loopEnabled: false, crawlEnabled: false, retentionEnabled: false, weeklyContentEnabled: false, schedulerEnabled: false }, clients: [], sources: [], authorizations: [], collections: [], limitations: [] }
@@ -40,7 +45,9 @@ async function render(failure?: { statusCode: number; message: string }, effectF
   new Function('require', 'module', 'exports', 'ref', 'computed', 'reactive', 'onMounted', '$fetch', panelJs)(nuxtRequire, panelModule, panelModule.exports, ref, computed, reactive, vi.fn(), post)
   const admissionModule = { exports: {} as { default?: unknown } }
   new Function('require', 'module', 'exports', admissionJs)(nuxtRequire, admissionModule, admissionModule.exports)
-  const requirePage = (id: string) => id === '~/components/owner/LivePublicationActionsPanel.vue' ? panelModule.exports : id === '~/components/OwnerSiteLearningAdmission.vue' ? admissionModule.exports : nuxtRequire(id)
+  const adviceModule = { exports: {} as { default?: unknown } }
+  new Function('require', 'module', 'exports', '$fetch', adviceJs)((id: string) => id === '../utils/draftAdvice' ? draftAdviceClient : nuxtRequire(id), adviceModule, adviceModule.exports, post)
+  const requirePage = (id: string) => id === '~/components/OwnerDraftAdvice.vue' ? adviceModule.exports : id === '~/components/owner/LivePublicationActionsPanel.vue' ? panelModule.exports : id === '~/components/OwnerSiteLearningAdmission.vue' ? admissionModule.exports : nuxtRequire(id)
   const module = { exports: {} as { default?: unknown } }
   new Function('require', 'module', 'exports', 'definePageMeta', 'useHead', 'useFetch', '$fetch', 'computed', 'ref', 'reactive', 'watch', js)(requirePage, module, module.exports, meta, head, fetcher, post, computed, ref, reactive, watch)
   const app = createSSRApp(module.exports.default)
@@ -51,7 +58,7 @@ async function render(failure?: { statusCode: number; message: string }, effectF
 describe('compiled owner learning workspace', () => {
   it('renders the real stages, honest empty gates, and unchecked learning consent', async () => {
     const { html, fetcher, post, meta, head } = await render()
-    for (const text of ['資料授權', '蒐集與檢視', '訓練與驗證', 'LINE 確認', '成效回收', '目前草稿的模型建議', '尚未蒐集資料', '尚缺真實核准觀測', '這不是市場排名', '兩件事', '尚未開通', '真正進入下一輪訓練', '不會被當成負例', '沒有完整 live 改動前後']) expect(html).toContain(text)
+    for (const text of ['資料授權', '蒐集與檢視', '訓練與驗證', 'LINE 確認', '成效回收', '目前草稿的模型建議', '尚未蒐集資料', '尚缺真實核准觀測', '分數不能用來替文章排名', '兩件事', '尚未開通', '真正進入下一輪訓練', '不會被當成負例', '沒有完整 live 改動前後']) expect(html).toContain(text)
     expect(html).toContain('href="/audit-lab/weekly-content"')
     expect(html).toContain('href="/api/interventions/closed-loop/outcome-release"')
     expect(html).not.toMatch(/type="checkbox"[^>]*checked|>保證排名<|已訓練成功/)
@@ -85,7 +92,7 @@ describe('compiled owner learning workspace', () => {
     const fixture = { workspace: { inventory: { verifiedPrimaryCount: 1000 }, readiness: { development: { ready: true, missing: [] }, shadow: { ready: true } }, datasets: [], trainingRuns: [], models: [
       { artifactId: 'geo-model-fallback', status: 'approved_for_shadow', fallbackOnly: true, modelFamily: 'regularized_logistic_baseline_v1', trainingRowCount: 200, metrics: {} },
       { artifactId: 'geo-model-review', status: 'ready_for_owner_review', fallbackOnly: true, modelFamily: 'regularized_logistic_baseline_v1', trainingRowCount: 200, metrics: {} },
-      { artifactId: 'geo-model-candidate', status: 'approved_for_shadow', fallbackOnly: false, modelFamily: 'regularized_logistic_baseline_v1', trainingRowCount: 200, metrics: {} },
+      { artifactId: 'geo-model-candidate', status: 'approved_for_shadow', fallbackOnly: false, taskType: 'citation_selection', modelFamily: 'regularized_logistic_baseline_v1', trainingRowCount: 200, metrics: {} },
     ] } }
     const { html, post } = await render(undefined, undefined, fixture)
     expect(html).toContain('第一個模型，也要有安全的回退基準')

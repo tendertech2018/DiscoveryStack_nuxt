@@ -127,4 +127,5 @@ DS_REAL_OWNERSHIP_DOMAIN=your-real-domain.com DS_EXPECT_OWNERSHIP_VERIFIED=1 pnp
 
 - 真實功能：Cloudflare credential probe、R2 bundle 讀取、固定模板靜態渲染、Cloudflare Pages preview Direct Upload、preview URL readiness poll、DNS TXT ownership、HTTPS well-known-file ownership。
 - 預設測試：所有 Cloudflare、DNS、vault 與 HTTPS 行為均由測試注入，不會碰網路，也不能當成 Cloudflare 帳號已可用的證明。
-- 尚未執行：production deploy 與 rollback 會明確回 503；payment、domain quote/purchase、DNS/TLS apply 也不在此 segment。系統不會因 preview 成功就宣稱正式站已上線。
+- 正式部署與回退已有內部 Cloudflare 實作。回退只接受 owner-scoped、同網站且有正式部署回執的舊版本；重讀目前權限與正式部署指標，確認 DNS/TLS、供應商 canonical deployment 及正式首頁內容後，才簽發回退回執。指標已切回目標時可核對重播，不另建部署、不修改 DNS、不刪版本。Cloudflare 沒有提供這段流程的跨系統交易鎖；驗證期間若有人從供應商控制台另行部署，仍須停止並人工核對。
+- 測試中的 Cloudflare 回應與頁面均為注入 fixture；真實帳號、發布及回退仍需隔離網站驗收。付款、網域採購及 DNS 設定沿用各自的授權與供應商流程，不能因 preview 成功就宣稱整個建站產品已正式開通。

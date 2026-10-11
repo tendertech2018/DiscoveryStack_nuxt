@@ -5,8 +5,10 @@
   "type": "module",
   "packageManager": "pnpm@10.24.0",
   "scripts": {
+    "test:offline-acceptance": "node scripts/operations/offline-acceptance.mjs --full",
     "ops:backup": "node scripts/operations/database-backup.mjs",
     "ops:smoke": "node scripts/operations/release-smoke.mjs",
+    "ops:operator": "node scripts/operations/operator.mjs",
     "audit:security": "node ../scripts/security/dependency-audit.mjs",
     "dev": "nuxt dev --host 0.0.0.0 --port 3000",
     "dev:nuxt": "nuxt dev --host 0.0.0.0 --port 3000",

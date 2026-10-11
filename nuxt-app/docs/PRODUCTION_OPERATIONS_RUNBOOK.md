@@ -7,7 +7,7 @@ This runbook separates a verified build from a verified live service. The Octobe
 1. Review the diff and CI for the exact commit. Run both applications' `audit:security` commands, the public build/tests, and Nuxt typecheck/build/safe tests. The generated migration manifest must match the checked-in SQL files. Never edit an already-applied migration to make readiness green.
 2. Use a non-sleeping Node service if background work must run reliably. Give it an explicit full source SHA (`RENDER_GIT_COMMIT`, `NUXT_OPERATIONS_BUILD_COMMIT`, or Docker build argument `DISCOVERYSTACK_BUILD_COMMIT`). `/api/__release` exposes the SHA; a marker alone is insufficient release evidence.
 3. Configure secrets only through the host's secret store. Follow [owner authentication and vault rotation](owner-auth-provider-vault-rotation.md) before changing session/vault keys. Verify an existing admin can still sign in. The temporary password route is disabled by default and cannot create/promote an admin.
-4. Back up the named production database with an approved read-only account, verify the encrypted file, copy it to an access-controlled offsite destination, and perform a separate isolated restore drill. Keep the backup key separately and verify recovery access. This repository does not upload backups or implement retention automatically.
+4. Back up the named production database with an approved read-only account, verify the encrypted file, copy it to an access-controlled offsite destination, and perform a separate isolated restore drill. Keep the backup key separately and verify recovery access. The default-off operator can create and read back an encrypted offsite copy; it never deletes backups automatically. See [operator setup and the consolidated launch checklist](LAUNCH_HANDOFF_2026_10_12.md).
 5. Review and apply migrations through the existing controlled migration procedure only after approving the target, backup and maintenance window. Build, container startup, probes, and smoke tests do not apply migrations. Validate migration SQL on the same engine/version as the production host before rollout.
 6. Keep provider and customer-automation flags disabled until their individual acceptance steps pass. Enable a narrowly scoped pilot first. Set shared edge rate limits for owner access when using proxies or multiple replicas.
 
@@ -19,6 +19,7 @@ This runbook separates a verified build from a verified live service. The Octobe
 | `/api/ready`, `/ready` | Public | HTTP 200 only when a source commit is known, database responds, and every migration ledger timestamp/hash matches the bundled manifest. Otherwise HTTP 503. |
 | `/api/__release` | Public | Existing release marker plus source commit identity. |
 | `/api/operations/readiness` | Existing owner session | Detailed sanitized database/migration and process-local task evidence. Unauthenticated requests return 401. |
+| `/api/operations/monitor` | Independent `DS_OPS_MONITOR_TOKEN` bearer | Fixed scheduler status only; no task payloads, names, customer data, database writes, or Owner privileges. Unconfigured/unauthorized requests return 401. |
 | `/audit-lab/operations` | Owner workspace | Refreshable status page with task filters and links to the relevant operations pages. |
 
 Public probes use `no-store`. They do not return database URLs, provider keys, customer data, or internal errors. Database checks have bounded timeouts and are briefly coalesced/cached to avoid one connection per concurrent probe. Use liveness for container restart policy and readiness for traffic/rollout acceptance; an unavailable database should not create a process restart storm.
@@ -67,6 +68,8 @@ The command refuses remote targets, the source fingerprint, root, and nonempty t
 Each MySQL child command is bounded at 30 minutes; verification decompression is bounded at 100 GiB but has no separate wall-clock deadline. Use an operator/job-level timeout for the complete workflow. Monitor backup age, verification failures, offsite-copy completion and a documented restore-time/restore-point objective. A local encrypted file alone is not an offsite backup policy.
 
 ## Real customer pilot acceptance
+
+The default-off `scripts/operations/operator.mjs` supplies durable backup claims, optional S3 ciphertext copy/readback, external health/release checks, authenticated task-summary checks, backup-age monitoring and incident/recovery email. Deploy it on a separate host with persistent storage; it is not registered by the application build. See the [one-time account/configuration list, safe commands and systemd templates](LAUNCH_HANDOFF_2026_10_12.md). A runner exit or provider acknowledgement is not inbox-delivery or restoration evidence.
 
 Retain an evidence record containing the deployed commit, timestamps, customer/owner consent scope, draft/version reference and sanitized provider receipt IDs. Avoid raw content, personal data, tokens, or keys in operational logs.
 

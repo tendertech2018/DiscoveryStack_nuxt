@@ -295,7 +295,7 @@ export type ManagedSiteDeploymentReceipt = {
 export type ManagedSiteDeploymentAdapter = {
   buildPreview(input: { projectId: number; versionId: number; releaseId: number; vaultReference: string; contentHash: string; canonicalDomain: string; providerAuthority: ManagedSiteProviderAuthoritySnapshot; requestFingerprint: string; timeoutMs: number }): Promise<ManagedSiteDeploymentReceipt>
   deployProduction(input: { projectId: number; versionId: number; releaseId: number; vaultReference: string; contentHash: string; canonicalDomain: string; previewReceiptFingerprint: string; approvalFingerprint: string; providerAuthority: ManagedSiteProviderAuthoritySnapshot; requestFingerprint: string; timeoutMs: number }): Promise<ManagedSiteDeploymentReceipt>
-  rollback(input: { projectId: number; fromReleaseId: number; toReleaseId: number; versionId: number; contentHash: string; canonicalDomain: string; priorDeploymentReceiptFingerprint: string; providerAuthority: ManagedSiteProviderAuthoritySnapshot; requestFingerprint: string; timeoutMs: number }): Promise<ManagedSiteDeploymentReceipt>
+  rollback(input: { ownerUserId: number; projectId: number; fromReleaseId: number; toReleaseId: number; versionId: number; contentHash: string; canonicalDomain: string; priorDeploymentReceiptFingerprint: string; providerAuthority: ManagedSiteProviderAuthoritySnapshot; requestFingerprint: string; timeoutMs: number }): Promise<ManagedSiteDeploymentReceipt>
 }
 
 export type ManagedSiteExistingSiteOwnershipReceipt = {

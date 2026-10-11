@@ -4,6 +4,9 @@ import { getCachedRuntimeReadiness } from '../../operations/readiness'
 import { resolveOperationsReleaseIdentity } from '../../operations/release'
 import { operationsSchedulerStatus, operationsTaskRuntimeStatus } from '../../operations/scheduler-readiness'
 import { requireOwner } from '../../utils/auth'
+import { operationsConfigurationPreflight } from '../../operations/configuration-preflight'
+import { buildOperationsAlertPlan } from '../../operations/alert-plan'
+import { operationsTaskLifecycle } from '../../operations/task-lifecycle'
 
 export default defineEventHandler(async (event) => {
   setResponseHeaders(event, {
@@ -43,6 +46,9 @@ export default defineEventHandler(async (event) => {
   return {
     status: database.status === 'ready' && ['ready', 'disabled'].includes(schedulerStatus) ? 'ready' : 'not_ready',
     checkedAt: new Date().toISOString(),
+    configuration: operationsConfigurationPreflight(process.env, config),
+    alertPlan: buildOperationsAlertPlan(database.status === 'ready', tasks),
+    taskLifecycle: operationsTaskLifecycle.snapshot(),
     database,
     scheduler: {
       status: schedulerStatus,

@@ -1,0 +1,10 @@
+[Unit]
+Description=Check DiscoveryStack backup due time every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Unit=discoverystack-ops@backup.service
+
+[Install]
+WantedBy=timers.target

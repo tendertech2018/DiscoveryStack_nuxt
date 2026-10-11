@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { operationsConfigurationPreflight } from '../../server/operations/configuration-preflight'
+import type { buildOperationsAlertPlan } from '../../server/operations/alert-plan'
 definePageMeta({ layout: 'owner' })
 useHead({ title: '營運狀態｜DiscoveryStack', meta: [{ name: 'robots', content: 'noindex, nofollow, noarchive' }] })
 
@@ -15,6 +17,9 @@ type OperationsReport = {
   }
   scheduler: { status: string; processStartedAt: string; tasks: Array<{ name: string; cron: string; maxHeartbeatAgeMs: number; feature: { enabled: boolean }; status: TaskStatus; heartbeat: Heartbeat | null }> }
   limitations: string[]
+  configuration?: ReturnType<typeof operationsConfigurationPreflight>
+  alertPlan?: ReturnType<typeof buildOperationsAlertPlan>
+  taskLifecycle?: { draining: boolean; activeRuns: number }
 }
 
 const report = ref<OperationsReport | null>(null)
@@ -27,6 +32,7 @@ const visibleTasks = computed(() => (report.value?.scheduler.tasks || []).filter
 const sourceCommit = computed(() => typeof report.value?.database.release === 'object' ? report.value.database.release.commit : null)
 const labels: Record<TaskStatus, string> = { disabled: '已停用', running: '執行中', running_unproven: '執行中，等待成功紀錄', healthy: '最近執行成功', not_observed: '尚未觀測到執行', stale: '逾期未回報', failing: '最近執行失敗' }
 const schedulerLabels: Record<string, string> = { ready: '已觀測到正常執行', disabled: '排程功能未啟用', awaiting_observation: '等待執行證據', degraded: '有任務需要處理' }
+const configurationLabels = { missing: '缺少設定', invalid: '設定需修正', configured_unverified: '格式通過，正式驗收未完成', disabled: '尚未啟用', requires_acceptance: '需要正式驗收' }
 const taskNames: Record<string, string> = {
   'model-improvement:collect': '模型改善', 'content-operations:geo-modelops-tick': '引用模型維護', 'managed-sites:editor-tick': '網頁編輯',
   'managed-sites:provisioning-tick': '客戶網站佈建', 'managed-sites:email-outbox-tick': '郵件寄送與清理', 'system-factory:provisioning-tick': '系統佈建',
@@ -70,6 +76,8 @@ onMounted(refresh)
         <section class="panel"><h2>背景工作</h2><strong>{{ schedulerLabels[report.scheduler.status] || '等待檢查' }}</strong><p>本程序啟動：{{ dateLabel(report.scheduler.processStartedAt) }}</p></section>
       </div>
       <p class="notice">檢查通過代表目前版本、資料庫與已啟用排程的檢查結果；客戶實際收信、LINE 核准、正式發布及模型品質仍依各自驗收紀錄判定。</p>
+      <section v-if="report.configuration" class="panel"><h2>正式開通前的設定預檢</h2><p>只檢查設定格式，不呼叫 AI、LINE 或寄件服務。不顯示金鑰或連線字串，也不代表正式服務已通過驗收。</p><p>資料庫檢查時限：{{ report.configuration.database.timeoutMs }} 毫秒；TLS 明確設定：{{ report.configuration.database.tlsExplicit ? '有' : '需核對' }}。</p><ul><li v-for="check in report.configuration.checks" :key="check.id">{{ check.label }}：{{ configurationLabels[check.status] }} <code>{{ check.code }}</code></li></ul></section>
+      <section v-if="report.alertPlan" class="panel"><h2>待處理告警</h2><p>這是本次檢查產生的告警清單，本頁不會寄送通知。外部監測工具須在獨立主機設定並啟用，收件狀態以外部執行紀錄及實際信箱為準；本站不能在自己停機時替代外部監測。</p><ul><li v-for="alert in report.alertPlan.alerts" :key="alert.deduplicationKey">{{ alert.taskName ? taskNames[alert.taskName] : '資料庫' }}：<code>{{ alert.code }}</code></li></ul><p v-if="!report.alertPlan.alerts.length">本次檢查沒有產生告警；不代表所有正式功能已通過。</p><p v-if="report.taskLifecycle">{{ report.taskLifecycle.draining ? '正在停止接收新排程' : '可接收排程' }}；執行中 {{ report.taskLifecycle.activeRuns }} 組。重啟恢復仍依持久任務與回執判定。</p></section>
       <section class="panel release-panel"><h2>目前部署</h2><dl><dt>程式版本</dt><dd><code>{{ sourceCommit || '尚未提供版本識別' }}</code></dd><dt>預期最新 migration</dt><dd><code>{{ report.database.migrations.expectedLatestTag || '尚未讀取' }}</code></dd><dt v-if="report.database.migrations.mismatchTag">不一致位置</dt><dd v-if="report.database.migrations.mismatchTag"><code>{{ report.database.migrations.mismatchTag }}</code></dd></dl></section>
       <section class="panel">
         <div class="task-toolbar"><h2>背景工作紀錄</h2><label>顯示<select v-model="filter"><option value="all">全部任務</option><option value="enabled">已啟用</option><option value="attention">待處理</option></select></label></div>

@@ -9,7 +9,8 @@ import { getManagedSiteLiveConnectorRepository } from '../repository'
 import { resolveManagedSiteCredential } from '../provider-registry'
 import type { ManagedSiteArtifactVault, ManagedSiteArtifactVaultBundle } from '../generation-service'
 import type { ManagedSiteCredentialResolver, ManagedSiteDeploymentReceipt, ManagedSiteProviderAuthoritySnapshot } from '../types'
-import { deployCloudflarePagesPreview, deployCloudflarePagesProduction, verifyCloudflarePagesAccess } from './cloudflare-pages'
+import { deployCloudflarePagesPreview, deployCloudflarePagesProduction, rollbackCloudflarePagesProduction, verifyCloudflarePagesAccess } from './cloudflare-pages'
+import { resolveManagedSiteRollbackAuthority, type ManagedSiteRollbackAuthorityResolver, type ManagedSiteRollbackCommand } from './rollback-authority'
 import type { ManagedSiteProductionProbe } from './production-probe'
 import { parseManagedSiteInternalBrokerConfiguration, type ManagedSiteInternalBrokerConfiguration } from './config'
 import { MANAGED_SITE_INTERNAL_BROKER_ORIGIN } from './constants'
@@ -33,6 +34,7 @@ export type ManagedSiteInternalBrokerDependencies = {
   porkbunFetch?: typeof fetch
   dnsMutationAuthorityResolver?: ManagedSiteDnsMutationAuthorityResolver
   productionProbe?: ManagedSiteProductionProbe
+  rollbackAuthorityResolver?: ManagedSiteRollbackAuthorityResolver
   dnsTxtResolver?: OwnershipDnsTxtResolver
   addressLookup?: OwnershipAddressLookup
   wellKnownFileFetcher?: OwnershipWellKnownFetcher
@@ -110,6 +112,7 @@ export function createManagedSiteInternalBrokerFetch(dependencies: ManagedSiteIn
   const credentialResolver = dependencies.credentialResolver || resolveManagedSiteCredential
   const configurationResolver = dependencies.configurationResolver || parseManagedSiteInternalBrokerConfiguration
   const vaultFactory = dependencies.vaultFactory || createS3ManagedSiteArtifactVault
+  const rollbackAuthorityResolver = dependencies.rollbackAuthorityResolver || (command => resolveManagedSiteRollbackAuthority(command, { credentialResolver }))
   const dnsMutationAuthorityResolver = dependencies.dnsMutationAuthorityResolver || (identity => resolveManagedSiteDnsMutationAuthority(identity, { credentialResolver }))
   const ownershipIdentityResolver = dependencies.ownershipIdentityResolver || (process.env.NODE_ENV === 'test' ? async () => null : async input => {
     const receipt = await getManagedSiteLiveConnectorRepository().findOwnershipChallengeByReference(input.projectId, input.canonicalDomain, input.challengeReference)
@@ -137,8 +140,23 @@ export function createManagedSiteInternalBrokerFetch(dependencies: ManagedSiteIn
         let body: unknown
         try { body = JSON.parse(raw) } catch { fail(422, 'Internal deployment broker body is malformed.') }
         if (!plain(body)) fail(422, 'Internal deployment broker body is malformed.')
-        if (pathname === '/v1/managed-sites/rollback') return json(503, 'Internal broker rollback is not implemented.')
         const cloudflareToken = await resolveSecret(credentialResolver, configuration.cloudflare.apiTokenReference)
+        if (pathname === '/v1/managed-sites/rollback') {
+          const keys = ['schemaVersion', 'providerKey', 'operation', 'ownerUserId', 'projectId', 'fromReleaseId', 'toReleaseId', 'versionId', 'contentHash', 'canonicalDomain', 'priorDeploymentReceiptFingerprint', 'providerAuthority', 'requestFingerprint', 'timeoutMs']
+          if (!exact(body, keys) || body.schemaVersion !== 'discoverystack-managed-deployment-command-v1' || body.providerKey !== 'internal-deployment-bearer-v1' || body.operation !== 'rollback' || !['ownerUserId', 'projectId', 'fromReleaseId', 'toReleaseId', 'versionId', 'timeoutMs'].every(key => positive(body[key])) || !['contentHash', 'priorDeploymentReceiptFingerprint', 'requestFingerprint'].every(key => typeof body[key] === 'string' && FINGERPRINT.test(body[key] as string))) fail(422, 'Internal rollback command is invalid.')
+          const canonicalDomain = canonicalOwnershipDomain(body.canonicalDomain)
+          const providerAuthority = authority(body.providerAuthority)
+          const command = body as unknown as ManagedSiteRollbackCommand
+          const allowed = await rollbackAuthorityResolver(command)
+          const configFingerprint = stableFingerprint(configuration)
+          const beforeMutation = async () => {
+            const current = await rollbackAuthorityResolver(command)
+            if (current.fingerprint !== allowed.fingerprint || stableFingerprint(configurationResolver()) !== configFingerprint || !sameSecret(await resolveSecret(credentialResolver, configuration.cloudflare.apiTokenReference), cloudflareToken) || !sameSecret(await resolveSecret(credentialResolver, configuration.deploymentCredentialReference), credential)) fail(409, 'Rollback authority changed before completion.')
+          }
+          const deployed = await rollbackCloudflarePagesProduction({ ...command, ...allowed, canonicalDomain }, { fetchImpl: dependencies.cloudflareFetch || fetch, accountId: configuration.cloudflare.accountId, apiToken: cloudflareToken, projectPrefix: configuration.cloudflare.projectPrefix, now: () => clock().getTime(), beforeMutation, productionProbe: dependencies.productionProbe })
+          const core = { providerKey: String(body.providerKey), providerEventId: `cf-rollback-${nonceFactory()}`.slice(0, 160), providerDeploymentId: deployed.deploymentId, projectId: command.projectId, versionId: command.versionId, contentHash: command.contentHash, canonicalDomain, deploymentUrl: deployed.deploymentUrl, status: 'rollback_verified' as const, observedAt: clock().toISOString(), providerAuthorityFingerprint: providerAuthority.authorityFingerprint }
+          return new Response(JSON.stringify(receipt(core, `cf-rollback:${stableFingerprint({ requestFingerprint: command.requestFingerprint, deploymentId: deployed.deploymentId })}`)), { status: 200, headers: { 'content-type': 'application/json' } })
+        }
         if (pathname === '/v1/managed-sites/verify') {
           const keys = ['schemaVersion', 'challenge', 'configurationFingerprint']
           if (!exact(body, keys) || body.schemaVersion !== 'managed-site-provider-verification-v1' || typeof body.challenge !== 'string' || body.challenge.length < 32 || typeof body.configurationFingerprint !== 'string' || !FINGERPRINT.test(body.configurationFingerprint)) fail(422, 'Internal deployment verification challenge is invalid.')

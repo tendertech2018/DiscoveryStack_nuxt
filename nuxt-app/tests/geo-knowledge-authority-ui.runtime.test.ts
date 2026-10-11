@@ -67,6 +67,7 @@ function mount(component: unknown) {
   const app = renderer.createApp(wrapper)
   app.component('NuxtLink', { props: ['to'], render: () => h('a') })
   app.component('GeoObservationAdmission', { render: () => h('div') })
+  app.component('GeoTrainingReadiness', { render: () => h('div') })
   app.mount(root)
   return { app, root }
 }
