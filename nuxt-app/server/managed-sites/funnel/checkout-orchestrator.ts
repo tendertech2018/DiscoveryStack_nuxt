@@ -18,7 +18,8 @@ import { createS3ManagedSiteArtifactVault } from '../live-connectors/s3-vault'
 import { createManagedSiteCheckoutSession } from '../live-connectors/checkout-session'
 import type { ManagedSiteCheckoutSessionAdapter, ManagedSiteDeploymentAdapter, ManagedSiteGenerationAdapter, ManagedSiteLiveConnectorRepository } from '../live-connectors/types'
 import { tokenHash } from '../normalization'
-import { getFunnelSessionRepository, MANAGED_SITE_FUNNEL_BUILD_RESERVATION_ACTION, type FunnelSessionRepository } from './session-repository'
+import { funnelSessionRevision, getFunnelSessionRepository, MANAGED_SITE_FUNNEL_BUILD_RESERVATION_ACTION, type FunnelSessionRepository } from './session-repository'
+import { confirmedStudioProposal } from './studio-state'
 import { assertFunnelStripeCheckoutMode, assertFunnelStripeCredentialMode } from './stripe-mode-guard'
 import { loadFunnelSession, type FunnelAnswers, type FunnelConsentSnapshot } from './session-service'
 import { funnelCatalogQuoteInput, funnelPreviewInput, projectFunnelQuote } from './quote-projection'
@@ -139,7 +140,7 @@ function isStaleBuild(session: { updatedAt: Date }, now: Date): boolean {
   return Number.isFinite(session.updatedAt.getTime()) && session.updatedAt.getTime() + MANAGED_SITE_FUNNEL_BUILD_STALE_MS <= now.getTime()
 }
 
-async function acquireBuild(session: Awaited<ReturnType<typeof loadFunnelSession>>, repository: FunnelSessionRepository, now: Date): Promise<void> {
+async function acquireBuild(session: Awaited<ReturnType<typeof loadFunnelSession>>, repository: FunnelSessionRepository, now: Date, expectedRevision: string): Promise<void> {
   if (session.status === 'building') {
     if (!isStaleBuild(session, now)) conflict('網站正在建置中，請稍候再試。')
     const recovered = await repository.transitionSession(session.id, 'building', { status: 'active' })
@@ -147,7 +148,7 @@ async function acquireBuild(session: Awaited<ReturnType<typeof loadFunnelSession
   } else if (session.status !== 'active') {
     conflict('此申請目前無法開始網站建置。')
   }
-  const building = await repository.transitionSession(session.id, 'active', { status: 'building' })
+  const building = await repository.transitionSession(session.id, 'active', { status: 'building' }, expectedRevision)
   if (!building) conflict('網站正在建置中，請稍候再試。')
 }
 
@@ -162,12 +163,14 @@ export async function runFunnelBuild(sessionId: number, sessionToken: string, de
   const managed = dependencies.managedRepository || getManagedSiteRepository()
   const live = dependencies.connectorRepository || getManagedSiteLiveConnectorRepository()
   const session = await loadFunnelSession(sessionId, sessionToken, funnelRepository, clock)
+  const sessionRevision = funnelSessionRevision(session)
   const answers = answersFor(session)
   if (session.releaseId && session.builtPreviewUrl) {
     return { previewUrl: session.builtPreviewUrl, releaseId: session.releaseId, quote: projectFunnelQuote(answers, session.id) }
   }
   assertBuildAnswers(answers)
   if (!consentFor(session)) conflict('Consent is required before building the website.')
+  const confirmedProposal = confirmedStudioProposal(session.id, answers)
   const admissionNow = clock()
   if (session.status === 'building' && !isStaleBuild(session, admissionNow)) conflict('網站正在建置中，請稍候再試。')
   const since = new Date(admissionNow.getTime() - MANAGED_SITE_FUNNEL_DAILY_BUILD_WINDOW_MS)
@@ -184,14 +187,14 @@ export async function runFunnelBuild(sessionId: number, sessionToken: string, de
   let artifactVault: ManagedSiteArtifactVault | undefined
   let deploymentAdapter: ManagedSiteDeploymentAdapter | undefined
   try {
-    generationAdapter = dependencies.generationAdapter || (executionMode === 'live' ? await managedSiteLiveGenerationAdapter(ownerUserId, live) : undefined)
+    generationAdapter = confirmedProposal ? undefined : dependencies.generationAdapter || (executionMode === 'live' ? await managedSiteLiveGenerationAdapter(ownerUserId, live) : undefined)
     artifactVault = dependencies.artifactVault || (executionMode === 'live' ? createS3ManagedSiteArtifactVault() : undefined)
     deploymentAdapter = dependencies.deploymentAdapter || (executionMode === 'live' ? await managedSiteLiveDeploymentAdapter(ownerUserId, live) : undefined)
-    if (!generationAdapter || !artifactVault || !deploymentAdapter) providerUnavailable()
+    if ((!confirmedProposal && !generationAdapter) || !artifactVault || !deploymentAdapter) providerUnavailable()
   } catch (error) {
     providerError(error)
   }
-  await acquireBuild(session, funnelRepository, clock())
+  await acquireBuild(session, funnelRepository, clock(), sessionRevision)
   const quoteInput = funnelCatalogQuoteInput(answers, session.id)
   const previewInput = funnelPreviewInput(answers, session.id)
   const consent = consentFor(session)!
@@ -243,7 +246,7 @@ export async function runFunnelBuild(sessionId: number, sessionToken: string, de
     }
     const occupied = await funnelRepository.countBuildReservationsSince(since)
     if (occupied > limit) dailyCapReached('after_reservation', occupied, limit)
-    const generation = await generateManagedSiteCandidate(ownerUserId, { projectId: prePurchase.project.id, sourceVersionId: prePurchase.version.id, templateIntent: 'astro', executionMode, idempotencyKey: key(session.id, 'generation') }, { adapter: generationAdapter, vault: artifactVault, repository: live, managedRepository: managed, clock })
+    const generation = await generateManagedSiteCandidate(ownerUserId, { projectId: prePurchase.project.id, sourceVersionId: prePurchase.version.id, templateIntent: 'astro', executionMode, idempotencyKey: key(session.id, 'generation'), ...(confirmedProposal ? { confirmedFunnelSessionId: session.id } : {}) }, { adapter: generationAdapter, vault: artifactVault, repository: live, managedRepository: managed, funnelRepository, clock })
     if (!generation.candidate) conflict('Website generation did not produce a governed candidate.')
     const release = await createGeneratedManagedSiteRelease(ownerUserId, { projectId: prePurchase.project.id, generationCandidateId: generation.candidate.id, canonicalDomain: domain, targetKey: 'production-primary', idempotencyKey: key(session.id, 'release') }, { repository: live, managedRepository: managed })
     await funnelRepository.updateSession(session.id, { releaseId: release.release.id })

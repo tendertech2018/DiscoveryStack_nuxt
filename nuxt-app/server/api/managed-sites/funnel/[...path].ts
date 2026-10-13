@@ -8,6 +8,8 @@ import { claimFunnelCustomerAccess } from '../../../managed-sites/funnel/custome
 import { setManagedSiteSessionCookie } from '../../../managed-sites/auth'
 import { projectFunnelQuote } from '../../../managed-sites/funnel/quote-projection'
 import { generateFunnelPreviewDraft, type FunnelPreviewDraft } from '../../../managed-sites/funnel/preview-draft-service'
+import { parseStudioRequest } from '../../../managed-sites/funnel/studio-preview'
+import { confirmStudioProposal, generateAndStoreStudioProposal, restoreStudioProposal, studioSessionProjection } from '../../../managed-sites/funnel/studio-proposal-service'
 import { getFunnelSessionRepository } from '../../../managed-sites/funnel/session-repository'
 import { createFunnelSession, loadFunnelSession, MANAGED_SITE_FUNNEL_CONSENT_VERSION, MANAGED_SITE_FUNNEL_TOTAL_STEPS, recordFunnelConsent, recordFunnelSiteAnalysis, saveFunnelStep, type FunnelAnswers } from '../../../managed-sites/funnel/session-service'
 import { assertSameOriginManagedSiteMutation, strictManagedSiteBody } from '../../../managed-sites/live-connectors/http'
@@ -127,7 +129,7 @@ async function sessionProjection(session: Awaited<ReturnType<typeof loadFunnelSe
   return {
     status: session.status,
     currentStep: session.currentStep,
-    answers: session.answers,
+    ...studioSessionProjection(session),
     consentSnapshot: consent?.scrolledToBottom === true ? { policyVersion: consent.policyVersion, acceptedAt: consent.acceptedAt, scrolledToBottom: true } : null,
     ...projectFunnelDomainSelection(consent),
     previewUrl: session.builtPreviewUrl,
@@ -257,6 +259,7 @@ export default defineEventHandler(async event => {
     if (method !== 'POST') throw createError({ statusCode: 405, statusMessage: 'Managed-site funnel route method is not allowed.' })
     assertSameOriginManagedSiteMutation(event); checkRateLimit(event, sessionId)
     await strictFunnelBody(event, [])
+    if ((authenticatedSession.answers as FunnelAnswers)?.studio) throw createError({ statusCode: 409, statusMessage: '這份申請已有完整提案，請回到提案工作室檢視或修改；不會另行重寫你已確認的內容。' })
     if (!claimPreviewDraftGeneration(sessionId)) {
       const replay = previewDraftReplay.get(sessionId)
       if (replay) return replay.draft
@@ -270,6 +273,27 @@ export default defineEventHandler(async event => {
     await saveFunnelStep(sessionId, sessionToken, { step: 6, answers: { previewDraft: { generatedAt: draft.generatedAt, source: draft.source, headline: draft.headline, sections: draft.sections } } }, repository)
     previewDraftReplay.set(sessionId, { createdAt: Date.now(), draft })
     return draft
+  }
+
+  if (segments.length === 3 && segments[2] === 'studio-preview') {
+    if (method !== 'POST') throw createError({ statusCode: 405, statusMessage: 'Managed-site funnel route method is not allowed.' })
+    assertSameOriginManagedSiteMutation(event); checkRateLimit(event, sessionId)
+    const input = parseStudioRequest(await strictFunnelBody(event, ['brandName', 'brief', 'siteType', 'goal', 'mode', 'revision']))
+    // Shares the existing expensive-generation allowance; never replays another brief's draft.
+    if (!claimPreviewDraftGeneration(sessionId)) throw createError({ statusCode: 429, statusMessage: '短時間內已產生多次預覽，請稍後再試；你仍可切換目前的三種版型。' })
+    return generateAndStoreStudioProposal(authenticatedSession, input, repository)
+  }
+
+  if (segments.length === 3 && segments[2] === 'studio-draft') {
+    if (method !== 'GET') throw createError({ statusCode: 405, statusMessage: 'Managed-site funnel route method is not allowed.' })
+    return restoreStudioProposal(authenticatedSession)
+  }
+
+  if (segments.length === 3 && segments[2] === 'studio-confirm') {
+    if (method !== 'POST') throw createError({ statusCode: 405, statusMessage: 'Managed-site funnel route method is not allowed.' })
+    assertSameOriginManagedSiteMutation(event); checkRateLimit(event, sessionId)
+    const body = await strictFunnelBody(event, ['proposalId', 'preset'])
+    return sessionProjection(await confirmStudioProposal(authenticatedSession, { proposalId: body.proposalId, preset: body.preset }, repository))
   }
 
   if (segments.length === 3 && segments[2] === 'build') {

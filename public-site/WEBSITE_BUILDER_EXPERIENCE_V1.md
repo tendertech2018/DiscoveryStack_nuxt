@@ -2,6 +2,10 @@
 
 ## Purpose
 
+October 12 entry update: the primary CTA now links to the existing private-origin customer studio (`customerStartUrl`), where the real renderer offers three preview-first design directions. The local concept island below remains a secondary, explicitly labelled demonstration. No public browser calls to private APIs or CORS expansion were added; the concept state machine below is unchanged.
+
+October 13 iteration: the private studio now offers an explicit AI strategy/copy action, page-by-page preview, and proposed copy revisions with computed differences, confirmation and undo. The non-AI outline remains separately labelled and available. The public CTA copy describes that flow without importing its model client or adding API permissions. This is source behavior, not a production deployment or real-model quality claim. The latest private integration saves full server-owned proposals and compiles the explicitly confirmed copy and design into the existing governed release flow without regenerating it. Production still requires verified provider accounts, payment/domain authorization and live acceptance; the public concept island remains only a demonstration.
+
 This page is a high-fidelity, client-side concept preview for customers who want DiscoveryStack to plan, generate, operate, and continuously improve a managed website. It is intentionally not a payment page, a domain registrar, a Shopify installation flow, or a deployment console.
 
 The product promise is simple: customers can first see and inspect an interactive direction, then decide whether to continue to human confirmation, payment, domain authorization, and deployment. The preview must never imply that one of those later actions has already happened.

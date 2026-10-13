@@ -3,6 +3,7 @@ type FunnelRequestFetch = <T = unknown>(path: string, options?: { method?: 'GET'
 // Preserve the original Nuxt fetch and local response DTOs.
 const fetchFunnel = $fetch as unknown as FunnelRequestFetch
 import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
+import { type StudioBrief, type StudioPreview, type StudioPreviewRequest, type StudioSelection } from '../../../utils/managedSiteStudio'
 import {
   CONVERSION_GOAL_OPTIONS,
   FEELING_OPTIONS,
@@ -46,6 +47,7 @@ type DomainAvailability = { available: true; canonicalDomain: string; quoteFinge
 type DomainRegistrant = { firstName: string; lastName: string; organization: string; address1: string; city: string; state: string; postalCode: string; country: string; phoneCountryCode: string; phone: string; email: string }
 
 type SessionProjection = {
+  studio?: null | { confirmed: boolean; hasProposal: boolean; proposalId: string | null }
   status: string
   currentStep: number
   answers: FunnelAnswersView
@@ -166,6 +168,22 @@ function initialAnswers(): WizardAnswers {
 }
 
 const answers = ref<WizardAnswers>(initialAnswers())
+const showDesignStudio = ref(true)
+const studioDraft = ref<StudioSelection | null>(null)
+const studioGenerating = ref(false)
+const confirmedStudioSelection = computed(() => {
+  const saved = sessionProjection.value
+  const preset = saved?.answers.style?.customerSitePreset
+  return saved?.studio?.confirmed && saved.studio.proposalId && preset
+    ? { proposalId: saved.studio.proposalId, preset }
+    : null
+})
+const studioInitial = computed<Partial<StudioBrief>>(() => !answers.value.company.brandName && studioDraft.value ? studioDraft.value.brief : ({
+  brandName: answers.value.company.brandName,
+  brief: answers.value.company.whatWeDo,
+  siteType: answers.value.siteType || 'brand_blog',
+  goal: (['increase_inquiries', 'increase_bookings', 'sell_online', 'build_brand'].includes(answers.value.company.conversionGoals[0] || '') ? answers.value.company.conversionGoals[0] : 'increase_inquiries') as StudioBrief['goal'],
+}))
 const progressWidths = ['11.111%', '22.222%', '33.333%', '44.444%', '55.556%', '66.667%', '77.778%', '88.889%', '100%']
 const currentStepMeta = computed(() => FUNNEL_STEPS[currentStep.value - 1]!)
 const consentGate = computed(() => consentGateState({ scrolledToBottom: consentScrolledToBottom.value, checked: consentChecked.value }))
@@ -193,7 +211,7 @@ const COMPANY_COMPLETION_ITEMS = [
 const companyMissing = computed(() => stepCompletion(2, answers.value, { accepted: consentAccepted.value }).missing)
 const companyCompleteCount = computed(() => COMPANY_COMPLETION_ITEMS.filter(item => !companyMissing.value.includes(item.missingLabel)).length)
 const nextDisabled = computed(() => saveStatus.value === 'saving' || (currentStep.value === 7 && (!domainReady.value || domainChecking.value)) || !canAdvance(currentStep.value, answers.value, { accepted: currentStep.value === 7 ? consentGate.value.canSubmit : consentAccepted.value }))
-const navigationBusy = computed(() => saveStatus.value === 'saving' || buildStatus.value === 'loading' || checkoutStatus.value === 'loading')
+const navigationBusy = computed(() => studioGenerating.value || saveStatus.value === 'saving' || buildStatus.value === 'loading' || checkoutStatus.value === 'loading')
 const designerTier = computed(() => catalog.value?.designTiers.find(item => item.key === 'designer'))
 const hasManualSetupModules = computed(() => Boolean(quote.value?.manualSetupModules.length))
 const contactModuleSelected = computed(() => (answers.value.modules || []).includes('contact_lead_capture'))
@@ -247,6 +265,7 @@ function restoreProjection(projection: SessionProjection) {
   }
   answers.value.modules = normalizedModulesForSiteType(answers.value.siteType, answers.value.modules)
   sessionProjection.value = projection
+  showDesignStudio.value = projection.status === 'active' && !projection.answers.company?.brandName
   domainAvailability.value = projection.domainAvailability
   domainDelegated.value = Boolean(projection.domainRegistration?.delegated)
   if (projection.domainRegistration) domainRegistrant.value = { ...projection.domainRegistration.registrant }
@@ -265,6 +284,7 @@ function restoreProjection(projection: SessionProjection) {
 
 async function createFreshSession() {
   const created = await fetchFunnel<{ sessionId: number; sessionToken: string }>('/api/managed-sites/funnel/sessions', { method: 'POST', body: {}, credentials: 'omit' })
+  studioDraft.value = null
   sessionId.value = created.sessionId
   sessionToken.value = created.sessionToken
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessionId: created.sessionId, sessionToken: created.sessionToken }))
@@ -329,6 +349,7 @@ async function bootstrap() {
     } else {
       await createFreshSession()
     }
+    if (sessionProjection.value?.studio?.hasProposal) await restoreSavedStudio()
     if (currentStep.value === 9) {
       await loadQuote()
       await loadFunnelStatus()
@@ -341,6 +362,7 @@ async function bootstrap() {
 }
 
 async function restart() {
+  if (navigationBusy.value) return
   if (!window.confirm('要清除目前進度並重新開始嗎？')) return
   loading.value = true
   bootstrapError.value = ''
@@ -351,6 +373,64 @@ async function restart() {
     bootstrapError.value = requestFailureMessage(error, '目前無法重新開始，請稍後再試。')
   } finally {
     loading.value = false
+  }
+}
+
+async function requestStudioPreview(input: StudioPreviewRequest): Promise<StudioPreview> {
+  studioGenerating.value = true
+  try {
+    const preview = await funnelFetch<StudioPreview>('/studio-preview', { method: 'POST', body: input })
+    if (sessionProjection.value) sessionProjection.value.studio = { ...sessionProjection.value.studio, confirmed: sessionProjection.value.studio?.confirmed || false, hasProposal: true, proposalId: sessionProjection.value.studio?.proposalId || null }
+    return preview
+  }
+  finally { studioGenerating.value = false }
+}
+
+async function restoreSavedStudio() {
+  studioDraft.value = await funnelFetch<StudioSelection | null>('/studio-draft', { method: 'GET' })
+}
+
+async function openSavedStudio() {
+  if (navigationBusy.value) return
+  saveMessage.value = ''
+  try {
+    if (!studioDraft.value && sessionProjection.value?.studio?.hasProposal) await restoreSavedStudio()
+    showDesignStudio.value = true
+  } catch (error) {
+    saveStatus.value = 'error'
+    saveMessage.value = requestFailureMessage(error, '完整提案暫時無法讀取，請稍後再試。')
+  }
+}
+
+function openDetailedStudioFlow(brief: StudioBrief, cachedDraft?: StudioSelection) {
+  if (navigationBusy.value) return
+  studioDraft.value = cachedDraft || null
+  answers.value.company = { ...answers.value.company, brandName: brief.brandName, whatWeDo: brief.brief, mainOffer: answers.value.company.mainOffer || brief.brief.slice(0, 1000), conversionGoals: [brief.goal] }
+  answers.value.siteType = brief.siteType
+  showDesignStudio.value = false
+  currentStep.value = 1
+  saveStatus.value = 'idle'
+  saveMessage.value = ''
+  presentCurrentStep()
+}
+
+async function adoptStudioDesign(selection: StudioSelection) {
+  if (navigationBusy.value || sessionProjection.value?.status !== 'active') return
+  saveStatus.value = 'saving'
+  saveMessage.value = ''
+  try {
+    if (!selection.preview.proposalId) throw new Error('這是舊版預覽，請重新產生完整提案再確認。')
+    // Only the server-stored identity and chosen preset cross this boundary, never client copy/HTML.
+    restoreProjection(await funnelFetch<SessionProjection>('/studio-confirm', { method: 'POST', body: { proposalId: selection.preview.proposalId, preset: selection.preset } }))
+    studioDraft.value = selection
+    draft.value = null
+    showDesignStudio.value = false
+    saveStatus.value = 'success'
+    saveMessage.value = '完整版本已確認；正式建置會沿用這份文案與版型。'
+    presentCurrentStep()
+  } catch (error) {
+    saveStatus.value = 'error'
+    saveMessage.value = requestFailureMessage(error, '這次未能確認完整版本，預覽仍保留；請稍後再試。')
   }
 }
 
@@ -640,6 +720,11 @@ async function loadQuote() {
 }
 
 async function startBuild() {
+  if (sessionProjection.value?.studio && !sessionProjection.value.studio.confirmed) {
+    buildStatus.value = 'error'
+    buildError.value = '請先回到提案工作室，確認要正式建置的完整版本。'
+    return
+  }
   const missingModules = missingRequiredModulesForSiteType(answers.value.siteType, answers.value.modules)
   if (missingModules.length) {
     buildStatus.value = 'error'
@@ -689,7 +774,7 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
       <span class="studio-nav__label">WEBSITE STUDIO</span>
       <button type="button" class="text-button" :disabled="navigationBusy" @click="restart">重新開始 <span aria-hidden="true">↻</span></button>
     </nav>
-    <header class="wizard__header" :class="{ 'wizard__header--compact': currentStep > 1 }">
+    <header v-if="!showDesignStudio" class="wizard__header" :class="{ 'wizard__header--compact': currentStep > 1 }">
       <div class="wizard__intro">
         <p class="eyebrow">YOUR BRAND. A NEW BEGINNING.</p>
         <h1 id="wizard-title">你的品牌，<br>值得一個好網站。</h1>
@@ -718,6 +803,9 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
     </section>
 
     <template v-else-if="catalog && sessionProjection">
+      <ManagedSiteDesignStudio v-if="showDesignStudio" :initial="studioInitial" :draft="studioDraft" :confirmed="confirmedStudioSelection" :request-preview="requestStudioPreview" :saving="saveStatus === 'saving'" :save-error="saveStatus === 'error' ? saveMessage : ''" @continue="adoptStudioDesign" @detailed="openDetailedStudioFlow" />
+      <template v-else>
+      <button v-if="sessionProjection.status === 'active'" type="button" class="text-button" :disabled="navigationBusy" @click="openSavedStudio">← 返回網站提案工作室</button>
       <div class="wizard__workspace">
       <nav class="progress" aria-label="訂購進度">
         <div class="progress__mobile">
@@ -963,6 +1051,12 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
         </div>
 
         <div v-else-if="currentStep === 6" class="step-body">
+          <section v-if="sessionProjection.studio" class="notice">
+            <h3>{{ sessionProjection.studio.confirmed ? '完整網站版本已確認' : '需要重新確認完整版本' }}</h3>
+            <p>{{ sessionProjection.studio.confirmed ? '正式建置會使用你選定的完整文案與版型，不會重新生成。新增功能會出現在付款前的正式預覽，供你最後檢查。' : '需求或風格已變更，請回到工作室檢查並確認要建置的版本。' }}</p>
+            <button type="button" class="button" :disabled="navigationBusy" @click="openSavedStudio">檢視完整提案</button>
+          </section>
+          <template v-else>
           <div v-if="!draft && !answers.previewDraft" class="preview-invitation">
             <span aria-hidden="true">↗</span><h3>讓品牌輪廓，變成第一個畫面。</h3><p>依照前面選擇的內容與風格，製作一份示意草稿。</p>
           </div>
@@ -981,6 +1075,7 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
             <article v-for="section in answers.previewDraft.sections" :key="section.heading"><h4>{{ section.heading }}</h4><p>{{ section.body }}</p></article>
           </section>
           <section v-if="draftError" class="state state--error" role="alert"><p>{{ draftError }}</p><button type="button" class="button button--secondary" @click="generatePreview">再試一次</button><small>示意預覽不是必填，你仍可繼續下一步。</small></section>
+          </template>
         </div>
 
         <div v-else-if="currentStep === 7" class="step-body">
@@ -1127,6 +1222,7 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
       </footer>
       </div>
       </div>
+      </template>
     </template>
   </main>
 </template>

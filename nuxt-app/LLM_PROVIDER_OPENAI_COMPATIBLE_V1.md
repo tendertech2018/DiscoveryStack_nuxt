@@ -40,3 +40,15 @@ Planner-provided warnings are sanitized and can never carry the reserved `AI_PLA
 1. Set the three `NUXT_LLM_*` variables in the deployment secret/configuration system, then enable only the desired feature switch.
 2. For the editor, submit one bounded sentence, inspect the structured proposal, and confirm that nothing changes until the customer explicitly applies a stored `proposed` proposal. For GEO, manually trigger one base draft and inspect provider provenance plus the human-review gate.
 3. Run `pnpm test:real-llm` in an isolated test environment, record only status/provenance metadata, then unset the feature switch to verify deterministic fallback.
+
+## Website Studio Claude transport (2026-10-13)
+
+The website studio additionally supports native Claude Messages through `server/llm-provider/anthropic.ts` and the studio-only selector `website-studio.ts`. This does not modify the OpenAI-compatible endpoint allowlist, GEO/content drafting, the page editor, training, or visibility probes.
+
+- Set `NUXT_MANAGED_SITE_STUDIO_PROVIDER=anthropic` and `ANTHROPIC_API_KEY` in the private API host's secret settings. Without the explicit switch, the existing provider selection is unchanged. When Claude is selected but its configuration is incomplete, fail closed without borrowing a Qwen key or calling another provider.
+- The default is `claude-sonnet-5-5`. Optional `ANTHROPIC_MODEL=claude-sonnet-4-6` supports that explicitly selected alternative. Optional `ANTHROPIC_WORKSPACE_ID` supports keys requiring a workspace. Unsupported model IDs fail closed.
+- Fixed `https://api.anthropic.com/v1/messages`, `x-api-key`, API version `2023-06-01`, separate top-level system prompt, no SDK, tools, redirects, sampling parameters or automatic retries. Sonnet 5.5 uses `thinking.type=between_tools`; 4.6 uses `disabled`. Each call has a 12,288 output-token cap, 90-second whole-response deadline and bounded response bytes. These bounds are not an account-wide monetary budget.
+- Only a completed assistant text message from the requested model is admitted. Refusal, truncation, unexpected blocks, invalid JSON and oversized output fail. The same studio copy/strategy validators, customer confirmation, immutable build and deployment gates apply. A failed revision never overwrites the existing draft.
+- No secret storage endpoint or new database field is introduced. The account owner pastes the key directly into Render. Never read back the value into logs, screenshots, chat, source or the public Astro build. Saving a key is not credential validation; generation requests consume provider usage after activation. Real calls require separate authorized acceptance.
+
+Official references checked for this implementation: [Messages API](https://platform.claude.com/docs/en/api/messages/create), [authentication](https://platform.claude.com/docs/en/manage-claude/authentication), [Sonnet 5.5 thinking change](https://platform.claude.com/docs/en/models/sonnet-5-5/whats-new-sonnet-5-5#turn-off-up-front-thinking-with-between_tools). Local tests inject a fake transport; no real Claude request is part of the default suite.

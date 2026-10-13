@@ -6,7 +6,7 @@ import { getManagedSiteRepository } from '../repository'
 import { parseSiteSpecSnapshot } from '../site-spec'
 import { resolveManagedSiteContactFormToken } from '../contact-form/token-service'
 import type { ManagedSiteRepository } from '../types'
-import { admitManagedSiteGenerationOutput } from './generation-artifact'
+import { admitManagedSiteGenerationOutput, type FirstPartyContactFormAdmission } from './generation-artifact'
 import { blueprintCompilerFingerprint, compileManagedSiteBlueprint, validateManagedSiteBlueprintProviderOutput } from './blueprint'
 import { getManagedSiteLiveConnectorRepository } from './repository'
 import { requireVerifiedManagedSiteProvider, resolveManagedSiteCredential } from './provider-registry'
@@ -22,6 +22,9 @@ import type {
   ManagedSiteBlueprintV1,
 } from './types'
 import { compareCodeUnits, managedSiteStableFingerprint } from './canonical'
+import { getFunnelSessionRepository, type FunnelSessionRepository } from '../funnel/session-repository'
+import { compileConfirmedStudioBlueprint, confirmedStudioProposal } from '../funnel/studio-state'
+import type { FunnelAnswers } from '../funnel/session-service'
 
 const REQUEST_SCHEMA_VERSION = 'managed-site-generation-request-v1' as const
 const GENERATION_TIMEOUT_MS = 30_000
@@ -57,6 +60,8 @@ export type GenerateManagedSiteCandidateInput = {
   templateIntent: 'astro' | 'nuxt'
   executionMode: ManagedSiteConnectorExecutionMode
   idempotencyKey: string
+  /** Server-owned funnel lineage only. Public/owner route schemas do not admit this field. */
+  confirmedFunnelSessionId?: number
 }
 
 function invalid(message: string): never { throw createError({ statusCode: 422, statusMessage: message }) }
@@ -65,6 +70,12 @@ function unavailable(message: string): never { throw createError({ statusCode: 5
 
 function vaultCollision(message = 'Managed-site owner vault object identity collided with different content.'): never {
   throw Object.assign(createError({ statusCode: 409, statusMessage: message }), { code: 'VAULT_COLLISION', retryable: false })
+}
+
+function firstPartyContactForm(request: ManagedSiteGenerationRequest): FirstPartyContactFormAdmission | undefined {
+  return request.selectedModules.includes('contact_lead_capture') && request.formEndpoint
+    ? { path: (request.siteSpec as any).siteType === 'one_page' ? 'src/pages/index.astro' : 'src/pages/contact.astro', endpoint: request.formEndpoint }
+    : undefined
 }
 
 function validateVaultBundle(value: unknown, expected: { ownerUserId: number; projectId: number; request: ManagedSiteGenerationRequest; providerKey: string; expectedModel: string | null }) {
@@ -78,7 +89,7 @@ function validateVaultBundle(value: unknown, expected: { ownerUserId: number; pr
   const compiledFiles = compileManagedSiteBlueprint(structured.blueprint)
   const compilerFingerprint = blueprintCompilerFingerprint(structured.blueprint, compiledFiles)
   if (compilerFingerprint !== bundle.compilerFingerprint || stableFingerprint(compiledFiles) !== stableFingerprint(bundle.files)) vaultCollision('Managed-site vault compiler lineage is mismatched.')
-  const admitted = admitManagedSiteGenerationOutput({ schemaVersion: 'managed-site-generation-provider-response-v1', providerKey: structured.output.providerKey, providerModel: structured.output.providerModel, providerRequestId: structured.output.providerRequestId, requestFingerprint: expected.request.requestFingerprint, files: bundle.files, manifestHash: stableFingerprint(bundle.files.map(file => ({ path: file.path, mediaType: file.mediaType, sha256: file.sha256 })).sort((left, right) => compareCodeUnits(left.path, right.path))) }, { requestFingerprint: expected.request.requestFingerprint, providerKey: expected.providerKey })
+  const admitted = admitManagedSiteGenerationOutput({ schemaVersion: 'managed-site-generation-provider-response-v1', providerKey: structured.output.providerKey, providerModel: structured.output.providerModel, providerRequestId: structured.output.providerRequestId, requestFingerprint: expected.request.requestFingerprint, files: bundle.files, manifestHash: stableFingerprint(bundle.files.map(file => ({ path: file.path, mediaType: file.mediaType, sha256: file.sha256 })).sort((left, right) => compareCodeUnits(left.path, right.path))) }, { requestFingerprint: expected.request.requestFingerprint, providerKey: expected.providerKey, firstPartyContactForm: firstPartyContactForm(expected.request) })
   if (stableFingerprint(admitted.manifest) !== stableFingerprint(bundle.manifest)) vaultCollision('Managed-site vault manifest or content hash is mismatched.')
   return { bundle, structured, admitted, compilerFingerprint }
 }
@@ -153,6 +164,7 @@ export async function generateManagedSiteCandidate(
     repository?: ManagedSiteLiveConnectorRepository
     managedRepository?: ManagedSiteRepository
     clock?: () => Date
+    funnelRepository?: FunnelSessionRepository
   } = {},
 ) {
   if (input.templateIntent !== 'astro') invalid('Managed-site generation V1 admits the fixed Astro template surface only.')
@@ -168,6 +180,17 @@ export async function generateManagedSiteCandidate(
   if (project.status === 'suspended') conflict('Suspended projects cannot create generation candidates.')
   if (!['active', 'preview', 'draft'].includes(version.lifecycleStatus)) conflict('Generation requires a current managed-site version snapshot.')
   const request = buildManagedSiteGenerationRequest(ownerUserId, project.id, version.id, version.versionFingerprint, version.siteSpecSnapshot, input.templateIntent, input.idempotencyKey, project.contactFormTokenVersion)
+  let confirmedOutput: ManagedSiteBlueprintProviderOutput | null = null
+  if (input.confirmedFunnelSessionId !== undefined) {
+    const session = await (dependencies.funnelRepository || getFunnelSessionRepository()).findSession(input.confirmedFunnelSessionId)
+    if (!session || session.status !== 'building' || session.projectId !== project.id || !session.previewId || !session.quoteId || !session.draftOrderId) conflict('Confirmed studio session does not match this build lineage.')
+    const answers = session.answers as FunnelAnswers
+    const proposal = confirmedStudioProposal(session.id, answers)
+    if (!proposal || (request.siteSpec as any).businessIdentity.brandName !== proposal.brief.brandName || (request.siteSpec as any).siteType !== proposal.brief.siteType || (request.siteSpec as any).customerSitePreset !== answers.studio!.confirmed!.preset) conflict('Confirmed studio source version does not match this proposal.')
+    request.requestFingerprint = managedSiteStableFingerprint({ scope: 'confirmed-studio-generation-v1', request: request.requestFingerprint, sessionId: session.id, proposalId: proposal.id, confirmation: answers.studio!.confirmed })
+    const blueprint = compileConfirmedStudioBlueprint(proposal, request)
+    confirmedOutput = { schemaVersion: 'managed-site-blueprint-provider-response-v1', providerKey: 'first_party_confirmed_studio', providerModel: 'confirmed-copy-v1', providerRequestId: `confirmed-${request.requestFingerprint}`, requestFingerprint: request.requestFingerprint, blueprint, blueprintHash: managedSiteStableFingerprint(blueprint) }
+  }
   if (input.executionMode !== 'dry_run' && request.selectedModules.includes('contact_lead_capture')) {
     const token = resolveManagedSiteContactFormToken(project.id, project.contactFormTokenVersion)
     if (token.tokenHash && token.tokenHash !== project.contactFormTokenHash) {
@@ -182,10 +205,12 @@ export async function generateManagedSiteCandidate(
   }
   const collision = await repository.findGenerationCandidateByRequest(ownerUserId, request.requestFingerprint)
   if (collision) conflict('Generation request already exists under a different idempotency key.')
-  const configured = await repository.findProviderConfiguration(ownerUserId, 'website_generator')
-  if (input.executionMode === 'live') await requireVerifiedManagedSiteProvider(ownerUserId, 'website_generator', repository, credentialResolver)
-  if (input.executionMode === 'mocked' && configured?.readinessStatus !== 'mock' && configured?.readinessStatus !== 'verified') unavailable('Mocked generation requires an explicit test-only mock provider configuration.')
-  const providerKey = configured?.providerKey || 'unconfigured'
+  // A previously generated, customer-confirmed copy snapshot uses a first-party compiler,
+  // not a new provider generation. It still traverses vault, admission, preview and review gates.
+  const configured = confirmedOutput ? null : await repository.findProviderConfiguration(ownerUserId, 'website_generator')
+  if (!confirmedOutput && input.executionMode === 'live') await requireVerifiedManagedSiteProvider(ownerUserId, 'website_generator', repository, credentialResolver)
+  if (!confirmedOutput && input.executionMode === 'mocked' && configured?.readinessStatus !== 'mock' && configured?.readinessStatus !== 'verified') unavailable('Mocked generation requires an explicit test-only mock provider configuration.')
+  const providerKey = confirmedOutput?.providerKey || configured?.providerKey || 'unconfigured'
   const attemptFingerprint = stableFingerprint({ ownerUserId, projectId: project.id, operation: 'generate_candidate', requestFingerprint: request.requestFingerprint, providerKey, executionMode: input.executionMode })
   const attemptKey = stableFingerprint({ operation: 'generate_candidate', idempotencyKey: input.idempotencyKey })
   let attempt = await repository.findAttemptByIdempotency(ownerUserId, attemptKey)
@@ -195,14 +220,14 @@ export async function generateManagedSiteCandidate(
     if (attempt.status === 'queued') await repository.updateAttempt(ownerUserId, attempt.id, { status: 'succeeded', exactResponseIdentity: `dry-run:${request.requestFingerprint}`, attemptNumber: 0 })
     return { candidate: null, replayed: false, executionMode: 'dry_run' as const, request: { schemaVersion: request.schemaVersion, requestFingerprint: request.requestFingerprint, projectId: request.projectId, sourceVersionId: request.sourceVersionId, templateIntent: request.templateIntent }, limitations: ['No provider, vault, preview, deployment, DNS, payment, or customer-site mutation was executed.'] }
   }
-  if (!dependencies.adapter) unavailable('Managed-site generation adapter is not injected.')
+  if (!confirmedOutput && !dependencies.adapter) unavailable('Managed-site generation adapter is not injected.')
   if (!dependencies.vault) unavailable('Managed-site artifact vault is not injected.')
   const now = clock()
   const leaseOwner = `generation-${randomBytes(12).toString('hex')}`
   const leased = await repository.acquireAttemptLease(ownerUserId, attempt.id, leaseOwner, now, GENERATION_LEASE_MS)
   if (!leased) conflict('Generation attempt is already leased, terminal, or waiting for its retry window.')
   const attemptNumber = leased.attemptNumber + 1
-  const expectedModel = input.executionMode === 'live' && configured?.transportConfiguration && typeof configured.transportConfiguration === 'object' && !Array.isArray(configured.transportConfiguration) && typeof (configured.transportConfiguration as any).model === 'string' ? String((configured.transportConfiguration as any).model) : null
+  const expectedModel = confirmedOutput?.providerModel || (input.executionMode === 'live' && configured?.transportConfiguration && typeof configured.transportConfiguration === 'object' && !Array.isArray(configured.transportConfiguration) && typeof (configured.transportConfiguration as any).model === 'string' ? String((configured.transportConfiguration as any).model) : null)
   let immutableVaultAuthorityAvailable = false
   try {
     const recovered = await dependencies.vault.lookupImmutableCandidate({ ownerUserId, projectId: project.id, requestFingerprint: request.requestFingerprint })
@@ -216,12 +241,12 @@ export async function generateManagedSiteCandidate(
       stored = { vaultReference: recovered.vaultReference, contentHash: admitted.manifest.contentHash, exactResponseIdentity: recovered.exactResponseIdentity }
       immutableVaultAuthorityAvailable = true
     } else {
-      const output = await boundedTimeout(dependencies.adapter.generate(request, { executionMode: input.executionMode, credentialReference: configured?.credentialReference || null, resolveCredential: credentialResolver, timeoutMs: GENERATION_TIMEOUT_MS, attemptNumber }), GENERATION_TIMEOUT_MS)
+      const output = confirmedOutput || await boundedTimeout(dependencies.adapter!.generate(request, { executionMode: input.executionMode, credentialReference: configured?.credentialReference || null, resolveCredential: credentialResolver, timeoutMs: GENERATION_TIMEOUT_MS, attemptNumber }), GENERATION_TIMEOUT_MS)
       structured = validateManagedSiteBlueprintProviderOutput(output, request, providerKey)
       if (expectedModel && structured.output.providerModel !== expectedModel) conflict('Generation provider model does not match the exact configured model.')
       const compiledFiles = compileManagedSiteBlueprint(structured.blueprint)
       compilerFingerprint = blueprintCompilerFingerprint(structured.blueprint, compiledFiles)
-      admitted = admitManagedSiteGenerationOutput({ schemaVersion: 'managed-site-generation-provider-response-v1', providerKey: structured.output.providerKey, providerModel: structured.output.providerModel, providerRequestId: structured.output.providerRequestId, requestFingerprint: request.requestFingerprint, files: compiledFiles, manifestHash: stableFingerprint(compiledFiles.map(file => ({ path: file.path, mediaType: file.mediaType, sha256: file.sha256 })).sort((left, right) => compareCodeUnits(left.path, right.path))) }, { requestFingerprint: request.requestFingerprint, providerKey })
+      admitted = admitManagedSiteGenerationOutput({ schemaVersion: 'managed-site-generation-provider-response-v1', providerKey: structured.output.providerKey, providerModel: structured.output.providerModel, providerRequestId: structured.output.providerRequestId, requestFingerprint: request.requestFingerprint, files: compiledFiles, manifestHash: stableFingerprint(compiledFiles.map(file => ({ path: file.path, mediaType: file.mediaType, sha256: file.sha256 })).sort((left, right) => compareCodeUnits(left.path, right.path))) }, { requestFingerprint: request.requestFingerprint, providerKey, firstPartyContactForm: firstPartyContactForm(request) })
       const bundle: ManagedSiteArtifactVaultBundle = { schemaVersion: 'managed-site-owner-vault-bundle-v2', ownerUserId, projectId: project.id, requestFingerprint: request.requestFingerprint, providerOutput: structured.output, blueprint: structured.blueprint, blueprintHash: structured.blueprintHash, compilerFingerprint, manifest: admitted.manifest, files: admitted.files }
       stored = await dependencies.vault.storeImmutableCandidate(bundle)
       immutableVaultAuthorityAvailable = true

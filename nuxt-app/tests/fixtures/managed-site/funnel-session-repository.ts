@@ -1,5 +1,5 @@
 import type { ManagedSiteFunnelSession } from '../../../server/database/schema'
-import { MANAGED_SITE_FUNNEL_BUILD_RESERVATION_ACTION, type FunnelFulfilmentCandidate, type FunnelSessionRepository } from '../../../server/managed-sites/funnel/session-repository'
+import { funnelSessionRevision, MANAGED_SITE_FUNNEL_BUILD_RESERVATION_ACTION, type FunnelFulfilmentCandidate, type FunnelSessionRepository } from '../../../server/managed-sites/funnel/session-repository'
 
 export function createFunnelSessionMemoryRepository(options?: {
   projects?: () => ReadonlyArray<{ id: number; ownerUserId: number; createdAt: Date }>
@@ -26,9 +26,10 @@ export function createFunnelSessionMemoryRepository(options?: {
       Object.assign(session, structuredClone(patch), { updatedAt: new Date() })
       return session
     },
-    async transitionSession(sessionId, expectedStatus, patch) {
+    async transitionSession(sessionId, expectedStatus, patch, expectedRevision) {
       const session = state.sessions.find(row => row.id === sessionId && row.status === expectedStatus)
       if (!session) return null
+      if (expectedRevision !== undefined && funnelSessionRevision(session) !== expectedRevision) return null
       Object.assign(session, structuredClone(patch), { updatedAt: new Date() })
       return session
     },

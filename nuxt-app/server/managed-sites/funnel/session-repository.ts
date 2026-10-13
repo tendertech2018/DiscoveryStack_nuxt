@@ -1,6 +1,7 @@
 import { and, asc, eq, gt, gte, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import { createError } from 'h3'
 import { getDatabase } from '../../database'
+import { managedSiteStableFingerprint } from '../live-connectors/canonical'
 import { managedSiteAuditEvents, managedSiteConnectorReceipts, managedSiteDomainClaims, managedSiteDraftOrders, managedSiteFunnelSessions, managedSiteProjects, managedSiteReleaseProjections, type ManagedSiteFunnelSession } from '../../database/schema'
 
 export const MANAGED_SITE_FUNNEL_BUILD_RESERVATION_ACTION = 'funnel_build_quota_reserved'
@@ -11,9 +12,13 @@ export type FunnelSessionRepository = {
   findSessionByToken(sessionId: number, sessionTokenHash: string): Promise<ManagedSiteFunnelSession | null>
   insertSession(input: Omit<ManagedSiteFunnelSession, 'id' | 'createdAt' | 'updatedAt'>): Promise<ManagedSiteFunnelSession>
   updateSession(sessionId: number, patch: Partial<Omit<ManagedSiteFunnelSession, 'id' | 'sessionTokenHash' | 'createdAt' | 'updatedAt'>>): Promise<ManagedSiteFunnelSession | null>
-  transitionSession(sessionId: number, expectedStatus: ManagedSiteFunnelSession['status'], patch: Partial<Omit<ManagedSiteFunnelSession, 'id' | 'sessionTokenHash' | 'createdAt' | 'updatedAt'>>): Promise<ManagedSiteFunnelSession | null>
+  transitionSession(sessionId: number, expectedStatus: ManagedSiteFunnelSession['status'], patch: Partial<Omit<ManagedSiteFunnelSession, 'id' | 'sessionTokenHash' | 'createdAt' | 'updatedAt'>>, expectedRevision?: string): Promise<ManagedSiteFunnelSession | null>
   countBuildReservationsSince(since: Date): Promise<number>
   listPaidBuildsForFulfilment(afterId: number, limit: number): Promise<FunnelFulfilmentCandidate[]>
+}
+
+export function funnelSessionRevision(session: ManagedSiteFunnelSession): string {
+  return managedSiteStableFingerprint({ answers: session.answers, consent: session.consentSnapshot, step: session.currentStep, previewId: session.previewId, projectId: session.projectId, releaseId: session.releaseId })
 }
 
 function requireDatabase() {
@@ -48,7 +53,18 @@ export function makeFunnelSessionRepository(database: any): FunnelSessionReposit
       await database.update(managedSiteFunnelSessions).set(patch as any).where(eq(managedSiteFunnelSessions.id, sessionId))
       return repository.findSession(sessionId)
     },
-    async transitionSession(sessionId, expectedStatus, patch) {
+    async transitionSession(sessionId, expectedStatus, patch, expectedRevision) {
+      if (expectedRevision !== undefined) {
+        // Compare canonical JSON under a DB row lock: timestamp precision and JSON key ordering
+        // are not reliable revision authorities in MySQL/TiDB.
+        return database.transaction(async (transaction: any) => {
+          const [row] = await transaction.select().from(managedSiteFunnelSessions).where(eq(managedSiteFunnelSessions.id, sessionId)).limit(1).for('update')
+          if (!row || row.status !== expectedStatus || funnelSessionRevision(row) !== expectedRevision) return null
+          await transaction.update(managedSiteFunnelSessions).set(patch as any).where(and(eq(managedSiteFunnelSessions.id, sessionId), eq(managedSiteFunnelSessions.status, expectedStatus)))
+          const [updated] = await transaction.select().from(managedSiteFunnelSessions).where(eq(managedSiteFunnelSessions.id, sessionId)).limit(1)
+          return updated || null
+        })
+      }
       const result = await database.update(managedSiteFunnelSessions).set(patch as any).where(and(eq(managedSiteFunnelSessions.id, sessionId), eq(managedSiteFunnelSessions.status, expectedStatus)))
       const affectedRows = Number((result as any)?.[0]?.affectedRows ?? (result as any)?.affectedRows ?? 0)
       return affectedRows === 1 ? repository.findSession(sessionId) : null

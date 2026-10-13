@@ -2,7 +2,7 @@ import { createError } from 'h3'
 import { getManagedSitePriceCatalog } from '../ordering-service'
 import { checkFunnelDomainAvailability } from './domain-registration'
 import { createFunnelDomainRegistrationDelegation, MANAGED_SITE_FUNNEL_DOMAIN_DELEGATION_TERMS, MANAGED_SITE_FUNNEL_DOMAIN_DELEGATION_VERSION } from './domain-purchase-authority'
-import { getFunnelSessionRepository, type FunnelSessionRepository } from './session-repository'
+import { funnelSessionRevision, getFunnelSessionRepository, type FunnelSessionRepository } from './session-repository'
 import { loadFunnelSession, MANAGED_SITE_FUNNEL_CONSENT_VERSION, type FunnelAnswers } from './session-service'
 
 function record(value: unknown): Record<string, any> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {} }
@@ -34,7 +34,7 @@ export async function checkAndStoreFunnelDomain(ownerUserId: number, sessionId: 
   // Re-read after external I/O so an unrelated newly saved wizard step is not overwritten.
   const latest = await loadFunnelSession(sessionId, token, repository, clock)
   const { domainAvailability: _oldQuote, domainRegistration: _oldConsent, ...retained } = record(latest.consentSnapshot)
-  const updated = await repository.transitionSession(sessionId, 'active', { consentSnapshot: { ...retained, ...(result.available ? { domainAvailability: result } : {}) } })
+  const updated = await repository.transitionSession(sessionId, 'active', { consentSnapshot: { ...retained, ...(result.available ? { domainAvailability: result } : {}) } }, funnelSessionRevision(latest))
   if (!updated) invalid('網站建置已開始，不能變更網域。')
   if (!result.available) return result
   return projectFunnelDomainSelection(updated.consentSnapshot).domainAvailability!
@@ -49,7 +49,7 @@ export async function recordFunnelDomainDelegation(sessionId: number, token: str
   if (consent.policyVersion !== MANAGED_SITE_FUNNEL_CONSENT_VERSION || consent.scrolledToBottom !== true || input.delegated !== true || input.termsVersion !== MANAGED_SITE_FUNNEL_DOMAIN_DELEGATION_VERSION) invalid('請閱讀並同意網站與網域代註冊授權。')
   if (domain?.option !== 'new' || availability.available !== true || availability.canonicalDomain !== `${domain.name}.${domain.tld}` || input.quoteFingerprint !== availability.quoteFingerprint || !Number.isFinite(Date.parse(availability.expiresAt)) || Date.parse(availability.expiresAt) <= clock().getTime()) invalid('網域選擇或報價已失效，請重新查詢。')
   const delegation = createFunnelDomainRegistrationDelegation({ sessionId, canonicalDomain: availability.canonicalDomain, registrant: input.registrant, quote: availability.quote, customerPrice: availability.customerPrice, acceptedAt: clock().toISOString() })
-  const updated = await repository.transitionSession(sessionId, 'active', { consentSnapshot: { ...consent, domainRegistration: delegation } })
+  const updated = await repository.transitionSession(sessionId, 'active', { consentSnapshot: { ...consent, domainRegistration: delegation } }, funnelSessionRevision(session))
   if (!updated) invalid('網站建置已開始，不能變更網域授權。')
   return updated
 }

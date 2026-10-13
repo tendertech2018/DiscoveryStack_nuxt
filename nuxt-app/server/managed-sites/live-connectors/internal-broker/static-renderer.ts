@@ -127,7 +127,7 @@ function renderPage(blueprint: ManagedSiteBlueprintV1, page: ManagedSiteBlueprin
 
 export function renderManagedSiteStaticAssets(blueprint: ManagedSiteBlueprintV1, files: readonly ManagedSiteGeneratedFile[] = [], canonicalOrigin?: string, customerSitePreset?: CustomerSitePreset): ManagedSiteStaticAsset[] {
   const origin = canonicalOrigin === undefined ? undefined : normalizePublicHttpsOrigin(canonicalOrigin)
-  const preset = resolveStaticPreset(customerSitePreset)
+  const preset = resolveStaticPreset(customerSitePreset ?? blueprint.customerSitePreset)
   const assets = blueprint.pages.map(page => ({ path: outputPath(page.route), contentType: 'text/html; charset=utf-8', content: renderPage(blueprint, page, preset, origin) }))
   if (blueprint.selectedModulePlacements.some(item => item.moduleKey === 'contact_lead_capture')) assets.push({ path: 'thanks/index.html', contentType: 'text/html; charset=utf-8', content: `<!doctype html><html lang="${blueprint.locale === 'zh-hant' ? 'zh-Hant' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex, nofollow, noarchive"><title>謝謝你的訊息</title><style>${STYLE}</style></head><body class="site-preset--${preset}" data-site-preset="${preset}"><main class="site-main site-shell"><section class="hero hero--compact"><div class="hero-copy"><p class="eyebrow">${escapeHtml(blueprint.brandName)}</p><h1>謝謝你的訊息</h1><p class="hero-lede">我們已收到你的訊息，會儘快與你聯絡。</p></div></section></main></body></html>` })
   for (const file of files) {
