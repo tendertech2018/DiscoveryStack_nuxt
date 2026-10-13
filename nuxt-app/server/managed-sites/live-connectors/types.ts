@@ -113,6 +113,8 @@ export type ManagedSiteBlueprintSectionV1 = {
 
 export type ManagedSiteBlueprintV1 = {
   schemaVersion: 'managed-site-blueprint-v1'
+  /** Optional for existing immutable v1 bundles; when present, bound to the server SiteSpec. */
+  customerSitePreset?: 'atelier' | 'bloom' | 'alignment'
   brandName: string
   locale: 'en' | 'zh-hant'
   siteType: 'one_page' | 'brand_blog' | 'simple_commerce'

@@ -3,6 +3,9 @@ import { createError } from 'h3'
 import { stableFingerprint } from '../../seo-geo-core/repository'
 import type { ManagedSiteAdmittedManifest, ManagedSiteGeneratedFile, ManagedSiteGenerationProviderOutput } from './types'
 import { canonicalArtifactCollisionKey, compareCodeUnits } from './canonical'
+import { renderManagedSiteContactForm, safeFormEndpoint } from './blueprint'
+
+export type FirstPartyContactFormAdmission = { path: 'src/pages/index.astro' | 'src/pages/contact.astro'; endpoint: string }
 
 export const MANAGED_SITE_GENERATION_MAX_FILES = 100
 export const MANAGED_SITE_GENERATION_MAX_FILE_BYTES = 200_000
@@ -68,7 +71,7 @@ function assertJsonSafe(content: string): void {
   visit(parsed, 0)
 }
 
-function validateFile(value: unknown): { file: ManagedSiteGeneratedFile; byteSize: number } {
+function validateFile(value: unknown, form?: FirstPartyContactFormAdmission): { file: ManagedSiteGeneratedFile; byteSize: number } {
   if (!plainRecord(value) || !exactKeys(value, FILE_KEYS)) blocked('Generated file schema is malformed or contains unknown fields.')
   const path = canonicalPath(value.path)
   const expectedMediaType = MEDIA_BY_EXTENSION[extension(path)]
@@ -82,7 +85,16 @@ function validateFile(value: unknown): { file: ManagedSiteGeneratedFile; byteSiz
   if (SECRET_MATERIAL.test(value.content)) blocked('Generated artifact contains secret-like material.')
   if (EXECUTABLE_HOOK.test(value.content)) blocked('Generated artifact contains an executable hook or active-content primitive.')
   if (value.mediaType === 'application/json') assertJsonSafe(value.content)
-  if ((value.mediaType === 'text/html' || value.mediaType === 'text/astro') && /<\s*form\b[^>]*(?:action|method)\s*=/iu.test(value.content)) blocked('Generated artifact contains an externally actionable form.')
+  if (value.mediaType === 'text/html' || value.mediaType === 'text/astro') {
+    let inspected = value.content
+    if (form && path === form.path && ['src/pages/index.astro', 'src/pages/contact.astro'].includes(path)) {
+      // Only the exact first-party compiler markup, one instance, at its server-selected path.
+      // No provider/caller form HTML or merely matching origin is sufficient authority.
+      const endpoint = safeFormEndpoint(form.endpoint)
+      if (endpoint) inspected = inspected.replace(renderManagedSiteContactForm({ kind: 'contact_form', formEndpoint: endpoint }), '')
+    }
+    if (/<\s*form\b[^>]*(?:action|method)\s*=|\bformaction\s*=/iu.test(inspected)) blocked('Generated artifact contains an externally actionable form.')
+  }
   if (value.mediaType === 'text/markdown' && /\]\(\s*(?:javascript:|data:|file:)/iu.test(value.content)) blocked('Generated Markdown contains an unsafe link protocol.')
   return { file: { path, mediaType: value.mediaType as ManagedSiteGeneratedFile['mediaType'], content: value.content, sha256: contentHash }, byteSize }
 }
@@ -91,7 +103,7 @@ export function computeManagedSiteProviderManifestHash(files: readonly Pick<Mana
   return stableFingerprint([...files].map(file => ({ path: file.path, mediaType: file.mediaType, sha256: file.sha256 })).sort((left, right) => compareCodeUnits(left.path, right.path)))
 }
 
-export function admitManagedSiteGenerationOutput(input: unknown, expected: { requestFingerprint: string; providerKey: string }): { output: ManagedSiteGenerationProviderOutput; manifest: ManagedSiteAdmittedManifest; files: ManagedSiteGeneratedFile[] } {
+export function admitManagedSiteGenerationOutput(input: unknown, expected: { requestFingerprint: string; providerKey: string; firstPartyContactForm?: FirstPartyContactFormAdmission }): { output: ManagedSiteGenerationProviderOutput; manifest: ManagedSiteAdmittedManifest; files: ManagedSiteGeneratedFile[] } {
   if (!plainRecord(input) || !exactKeys(input, OUTPUT_KEYS)) blocked('Generation provider response schema is malformed or contains unknown fields.')
   if (input.schemaVersion !== 'managed-site-generation-provider-response-v1') blocked('Generation provider response version is unsupported.')
   if (typeof input.providerKey !== 'string' || input.providerKey !== expected.providerKey || !PROVIDER_REFERENCE.test(input.providerKey)) blocked('Generation provider identity does not match the configured provider.')
@@ -99,7 +111,7 @@ export function admitManagedSiteGenerationOutput(input: unknown, expected: { req
   if (typeof input.providerRequestId !== 'string' || !PROVIDER_REFERENCE.test(input.providerRequestId)) blocked('Generation provider request identity is invalid.')
   if (typeof input.requestFingerprint !== 'string' || input.requestFingerprint !== expected.requestFingerprint || !SHA256.test(input.requestFingerprint)) blocked('Generation provider response is not bound to the exact request.')
   if (!Array.isArray(input.files) || input.files.length < 1 || input.files.length > MANAGED_SITE_GENERATION_MAX_FILES) blocked('Generation provider returned an invalid file count.')
-  const admitted = input.files.map(validateFile)
+  const admitted = input.files.map(file => validateFile(file, expected.firstPartyContactForm))
   const collisionKeys = new Set<string>()
   for (const { file } of admitted) {
     const key = canonicalArtifactCollisionKey(file.path)

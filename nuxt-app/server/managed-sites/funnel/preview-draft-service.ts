@@ -1,5 +1,6 @@
 import { createError } from 'h3'
-import { createOpenAiCompatibleChatClient, resolveOpenAiCompatibleProviderConfiguration, type OpenAiCompatibleProviderConfiguration } from '../../llm-provider/openai-compatible'
+import { resolveOpenAiCompatibleProviderConfiguration } from '../../llm-provider/openai-compatible'
+import { createWebsiteStudioChatClient, websiteStudioProviderKey, type WebsiteStudioProviderConfiguration } from '../../llm-provider/website-studio'
 import { stableFingerprint } from '../../seo-geo-core/repository'
 import { managedSiteStableFingerprint } from '../live-connectors/canonical'
 import { analysePublicHomepageHtml } from '../../utils/publicSiteAnalysis'
@@ -9,7 +10,7 @@ import { MANAGED_SITE_BLUEPRINT_MAX_BYTES, compileManagedSiteBlueprint, validate
 import { renderManagedSiteStaticAssets } from '../live-connectors/internal-broker/static-renderer'
 import type { ManagedSiteBlueprintProviderOutput, ManagedSiteBlueprintV1, ManagedSiteGenerationAdapter, ManagedSiteGenerationRequest } from '../live-connectors/types'
 import type { ManagedSiteFunnelSession } from '../../database/schema'
-import type { CustomerSitePreset, SiteSpec } from '../site-spec'
+import { CUSTOMER_SITE_PRESETS, type CustomerSitePreset, type SiteSpec } from '../site-spec'
 import type { FunnelAnswers } from './session-service'
 import { funnelSiteSpec } from './quote-projection'
 
@@ -24,6 +25,7 @@ export type FunnelPreviewDraft = {
   headline: string
   sections: { heading: string; body: string }[]
   html: string
+  designs?: { preset: CustomerSitePreset; html: string }[]
   scores: FunnelPreviewScores
   comparison: null | {
     before: { url: string; analysedAt: string; scores: FunnelPreviewScores }
@@ -34,11 +36,15 @@ export type FunnelPreviewDraft = {
 
 export type FunnelPreviewDraftDependencies = {
   generationAdapter?: ManagedSiteGenerationAdapter
-  providerConfiguration?: OpenAiCompatibleProviderConfiguration
+  providerConfiguration?: WebsiteStudioProviderConfiguration
   clock?: () => Date
   analyse?: typeof analysePublicHomepageHtml
   templateBuilder?: (request: ManagedSiteGenerationRequest) => ManagedSiteBlueprintProviderOutput['blueprint']
   fetchImpl?: typeof fetch
+  includeDesignVariants?: boolean
+  siteSpec?: SiteSpec
+  /** Server-only projection hook; called with the final, rendered blueprint, never an abandoned AI candidate. */
+  onBlueprint?: (blueprint: ManagedSiteBlueprintV1) => void
 }
 
 class PreviewDraftUnavailableError extends Error {
@@ -52,9 +58,9 @@ function answersFor(session: ManagedSiteFunnelSession): FunnelAnswers {
   return session.answers && typeof session.answers === 'object' && !Array.isArray(session.answers) ? session.answers as FunnelAnswers : {}
 }
 
-function previewRequest(session: ManagedSiteFunnelSession): ManagedSiteGenerationRequest & { siteSpec: SiteSpec } {
+function previewRequest(session: ManagedSiteFunnelSession, suppliedSpec?: SiteSpec): ManagedSiteGenerationRequest & { siteSpec: SiteSpec } {
   const answers = answersFor(session)
-  const siteSpec = funnelSiteSpec(answers, session.id)
+  const siteSpec = suppliedSpec || funnelSiteSpec(answers, session.id)
   const answersFingerprint = stableFingerprint(answers)
   const idempotencyKey = stableFingerprint({ scope: 'funnel-preview-draft', sessionId: session.id, answersFingerprint })
   const evidenceSnapshotHash = stableFingerprint({ scope: 'funnel-preview-evidence', sessionId: session.id, answersFingerprint })
@@ -82,8 +88,8 @@ function previewRequest(session: ManagedSiteFunnelSession): ManagedSiteGeneratio
 // runs well past a conventional 30s API budget, so the preview waits long enough for a real draft before falling back.
 const FUNNEL_PREVIEW_PROVIDER_TIMEOUT_MS = 90_000
 
-function configuredPreviewAdapter(configuration: Extract<OpenAiCompatibleProviderConfiguration, { configured: true }>, fetchImpl?: typeof fetch): ManagedSiteGenerationAdapter {
-  const client = createOpenAiCompatibleChatClient({ endpoint: configuration.endpoint, apiKey: configuration.apiKey, model: configuration.model, fetchImpl })
+function configuredPreviewAdapter(configuration: Extract<WebsiteStudioProviderConfiguration, { configured: true }>, fetchImpl?: typeof fetch): ManagedSiteGenerationAdapter {
+  const client = createWebsiteStudioChatClient(configuration, fetchImpl)
   return {
     async generate(request) {
       const skeleton = createDeterministicManagedSiteBlueprint(request)
@@ -109,7 +115,7 @@ function configuredPreviewAdapter(configuration: Extract<OpenAiCompatibleProvide
       }
       return {
         schemaVersion: 'managed-site-blueprint-provider-response-v1',
-        providerKey: `openai-compatible:${configuration.providerLabel}`,
+        providerKey: websiteStudioProviderKey(configuration),
         providerModel: configuration.model,
         providerRequestId: `funnel-preview-${request.requestFingerprint.slice(0, 40)}`,
         requestFingerprint: request.requestFingerprint,
@@ -182,7 +188,7 @@ export async function generateFunnelPreviewDraft(session: ManagedSiteFunnelSessi
   const clock = dependencies.clock || (() => new Date())
   const generatedAt = clock()
   if (!Number.isFinite(generatedAt.getTime())) throw createError({ statusCode: 422, statusMessage: 'Preview draft clock is invalid.' })
-  const request = previewRequest(session)
+  const request = previewRequest(session, dependencies.siteSpec)
   const configuration = dependencies.providerConfiguration || resolveOpenAiCompatibleProviderConfiguration()
   let source: FunnelPreviewSource = 'template'
   let sourceReason = 'AI 產生器尚未設定，改用樣板草稿。'
@@ -210,17 +216,24 @@ export async function generateFunnelPreviewDraft(session: ManagedSiteFunnelSessi
   }
 
   let rendered: Pick<FunnelPreviewDraft, 'blueprintHash' | 'headline' | 'sections' | 'html'>
+  let designs: FunnelPreviewDraft['designs']
+  const renderDesigns = () => dependencies.includeDesignVariants
+    ? CUSTOMER_SITE_PRESETS.map(preset => ({ preset, html: renderPreview(blueprint, blueprintHash, preset).html }))
+    : undefined
   try {
     rendered = renderPreview(blueprint, blueprintHash, request.siteSpec.customerSitePreset)
+    designs = renderDesigns()
   } catch (error) {
     if (source !== 'llm') previewUnavailable()
     ;({ blueprint, blueprintHash } = templateBlueprint(request, dependencies))
     source = 'template'
     sourceReason = fallbackReason(error)
     rendered = renderTemplate(blueprint, blueprintHash, request.siteSpec.customerSitePreset)
+    try { designs = renderDesigns() } catch { previewUnavailable() }
   }
   const hostname = `funnel-${session.id}.preview.invalid`
   const analysis = (dependencies.analyse || analysePublicHomepageHtml)({ html: rendered.html, requestedUrl: `https://${hostname}/`, finalUrl: `https://${hostname}/`, hostname, analysedAt: generatedAt })
   const scores = analysis.scores
-  return { source, sourceReason, generatedAt: generatedAt.toISOString(), ...rendered, scores, comparison: comparisonFor(answersFor(session), scores) }
+  dependencies.onBlueprint?.(blueprint)
+  return { source, sourceReason, generatedAt: generatedAt.toISOString(), ...rendered, ...(designs ? { designs } : {}), scores, comparison: comparisonFor(answersFor(session), scores) }
 }

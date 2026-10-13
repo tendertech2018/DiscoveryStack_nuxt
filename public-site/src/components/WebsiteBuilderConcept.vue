@@ -571,8 +571,9 @@ onBeforeUnmount(() => {
       <div class="builder-masthead-copy">
         <p class="builder-eyebrow">DISCOVERYSTACK / ONE-CLICK WEBSITE STUDIO</p>
         <h1><span class="studio-title-line"><span>一鍵建站。</span></span><span class="studio-title-line"><em>先看見你的第一版。</em></span></h1>
-        <p class="builder-lede">說說你的生意，選擇風格與功能，<br class="studio-desktop-break">按一下，產生可以親手體驗的網站預覽。</p>
-        <div class="studio-entry-actions"><a class="studio-start" href="#website-studio" @click.prevent="focusStudio">開始建立網站預覽 <span aria-hidden="true">↗</span></a><a class="studio-services-link" href="#builder-services">可以做哪些功能？ <span aria-hidden="true">↓</span></a></div>
+        <p class="builder-lede">說說你的生意，讓 AI 提出網站企劃與文案，<br class="studio-desktop-break">看每一頁、用一句話修改，再決定上線方向。</p>
+        <div class="studio-entry-actions"><a class="studio-start" data-managed-site-start :href="customerStartUrl">開始建立網站預覽 <span aria-hidden="true">↗</span></a><a class="studio-services-link" href="#website-studio" @click.prevent="focusStudio">先試下方概念示範 <span aria-hidden="true">↓</span></a></div>
+        <p class="builder-care-note">建站工作室可使用 AI 企劃，也能先看免 AI 版型。修改先看差異、確認後套用；下方仍為概念示範。</p>
         <p class="builder-care-note">預覽起步；上線後，可依方案持續觀察與改善。</p>
         <p class="builder-care-note">正式交付後 30 天，原功能範圍內的排版、美術調整免費。新增功能、資料搬遷、新串接及第三方費用另行確認。</p>
         <div class="builder-trust-row" aria-label="預覽體驗"><span>免信用卡</span><span>風格與動畫可選</span><span>先看成果，再選方案</span></div>

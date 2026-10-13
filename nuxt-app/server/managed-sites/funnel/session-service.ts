@@ -6,7 +6,8 @@ import { getManagedSitePriceCatalog } from '../ordering-service'
 import { tokenHash } from '../normalization'
 import { BUSINESS_GOALS, SITE_MODULES } from '../site-spec'
 import { MANAGED_SITE_TYPES } from '../types'
-import { getFunnelSessionRepository, type FunnelSessionRepository } from './session-repository'
+import { funnelSessionRevision, getFunnelSessionRepository, type FunnelSessionRepository } from './session-repository'
+import { studioContentAnswersFingerprint, type FunnelStudioState } from './studio-state'
 
 export const MANAGED_SITE_FUNNEL_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14
 export const MANAGED_SITE_FUNNEL_TOTAL_STEPS = 9
@@ -20,6 +21,7 @@ type ExistingSiteSnapshot = {
 }
 
 export type FunnelAnswers = {
+  studio?: FunnelStudioState
   existingSite?: {
     hasSite: boolean
     url?: string
@@ -240,25 +242,30 @@ export async function loadFunnelSession(sessionId: number, sessionToken: string,
 
 export async function saveFunnelStep(sessionId: number, sessionToken: string, input: { step: number; answers: Partial<FunnelAnswers>; consent?: ConsentInput }, repository: FunnelSessionRepository = getFunnelSessionRepository(), clock: () => Date = () => new Date()) {
   const session = await loadFunnelSession(sessionId, sessionToken, repository, clock)
+  const revision = funnelSessionRevision(session)
   if (!Number.isSafeInteger(input?.step) || input.step < 1 || input.step > MANAGED_SITE_FUNNEL_TOTAL_STEPS) invalid('Funnel step must be between 1 and 9.')
   if (session.status !== 'active') throw createError({ statusCode: 409, statusMessage: 'This funnel session can no longer be changed.' })
   const answers = mergeAnswers(session.answers, validateAnswers(input?.answers))
+  if ((session.answers as FunnelAnswers)?.studio && session.previewId) throw createError({ statusCode: 409, statusMessage: '這份網站已開始正式建置；請重試原版本，或另開一份申請修改內容。' })
+  if (answers.studio?.confirmed && answers.studio.confirmed.answersFingerprint !== studioContentAnswersFingerprint(answers)) {
+    answers.studio = { ...answers.studio, confirmed: null }
+  }
   let consent = input.consent === undefined ? session.consentSnapshot : { ...(session.consentSnapshot as object || {}), ...consentSnapshot(input.consent, clock) }
   if (JSON.stringify((session.answers as FunnelAnswers)?.domain) !== JSON.stringify(answers.domain) && consent) {
     const { domainRegistration: _previousDelegation, ...retained } = consent as Record<string, unknown>
     consent = retained
   }
   const currentStep = Math.min(MANAGED_SITE_FUNNEL_TOTAL_STEPS, Math.max(session.currentStep, input.step + 1))
-  const updated = await repository.transitionSession(session.id, 'active', { answers, consentSnapshot: consent, currentStep } as any)
-  if (!updated) notFound()
+  const updated = await repository.transitionSession(session.id, 'active', { answers, consentSnapshot: consent, currentStep } as any, revision)
+  if (!updated) throw createError({ statusCode: 409, statusMessage: '進度已在另一個操作中更新，請重新整理後再試。' })
   return updated
 }
 
 export async function recordFunnelConsent(sessionId: number, sessionToken: string, input: ConsentInput, repository: FunnelSessionRepository = getFunnelSessionRepository(), clock: () => Date = () => new Date()) {
   const session = await loadFunnelSession(sessionId, sessionToken, repository, clock)
   if (session.status !== 'active') throw createError({ statusCode: 409, statusMessage: 'This funnel session can no longer be changed.' })
-  const updated = await repository.transitionSession(session.id, 'active', { consentSnapshot: { ...(session.consentSnapshot as object || {}), ...consentSnapshot(input, clock) } } as any)
-  if (!updated) notFound()
+  const updated = await repository.transitionSession(session.id, 'active', { consentSnapshot: { ...(session.consentSnapshot as object || {}), ...consentSnapshot(input, clock) } } as any, funnelSessionRevision(session))
+  if (!updated) throw createError({ statusCode: 409, statusMessage: '進度已更新，請重新整理後再確認同意。' })
   return updated
 }
 
@@ -275,7 +282,7 @@ export async function recordFunnelSiteAnalysis(
   const snapshot = scoreSnapshot(input.snapshot)
   const answers = mergeAnswers(session.answers, { existingSite: { hasSite: true, url, snapshot } })
   const currentStep = Math.min(MANAGED_SITE_FUNNEL_TOTAL_STEPS, Math.max(session.currentStep, 2))
-  const updated = await repository.updateSession(session.id, { answers, currentStep } as any)
-  if (!updated) notFound()
+  const updated = await repository.transitionSession(session.id, 'active', { answers, currentStep } as any, funnelSessionRevision(session))
+  if (!updated) throw createError({ statusCode: 409, statusMessage: '進度已更新，請重新整理後再試。' })
   return updated
 }

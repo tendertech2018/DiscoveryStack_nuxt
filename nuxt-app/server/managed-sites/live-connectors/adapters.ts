@@ -79,6 +79,7 @@ export function createDeterministicManagedSiteBlueprint(request: ManagedSiteGene
   const pages = blueprintPages(spec)
   return applyManagedSiteFirstPartySectionContracts({
     schemaVersion: 'managed-site-blueprint-v1', brandName: spec.businessIdentity.brandName, locale: spec.locale, siteType: spec.siteType,
+    ...(spec.customerSitePreset ? { customerSitePreset: spec.customerSitePreset } : {}),
     navigation: pages.map(page => ({ label: page.pageKey === 'home' ? spec.businessIdentity.brandName : spec.locale === 'zh-hant' ? PAGE_LABELS_ZH[page.pageKey] : page.pageKey, route: page.route })), pages,
     faq: pages.some(page => page.pageKey === 'faq') ? [{ question: spec.locale === 'zh-hant' ? `${spec.businessIdentity.brandName} 提供什麼服務？` : `What does ${spec.businessIdentity.brandName} provide?`, answer: spec.businessIdentity.brief }] : [],
     selectedModulePlacements: [...spec.selectedModules].sort().map(moduleKey => {
