@@ -55,9 +55,17 @@ export function confirmedStudioProposal(sessionId: number, answers: FunnelAnswer
 
 /** Copy is frozen; only server-owned module slots, form endpoints and provenance are rebound. */
 export function compileConfirmedStudioBlueprint(proposal: StoredStudioProposal, request: ManagedSiteGenerationRequest): ManagedSiteBlueprintV1 {
+  if (request.locale !== proposal.blueprint.locale) studioConflict()
   const skeleton = createStudioBlueprint(request, proposal.brief)
   const copy = validateStudioCopy(projectStudioCopy(proposal.blueprint), skeleton)
   const blueprint = mergeManagedSiteCopy(skeleton, copy, JSON.stringify(copy))
+  if (proposal.blueprint.studioPresentation) {
+    blueprint.studioPresentation = structuredClone(proposal.blueprint.studioPresentation)
+    for (const page of blueprint.pages) for (const section of page.sections) {
+      const approved = proposal.blueprint.pages.flatMap(item => item.sections).find(item => item.sectionId === section.sectionId)
+      if (section.ctaLabel && approved?.ctaLabel) section.ctaLabel = approved.ctaLabel
+    }
+  }
   if (managedSiteStableFingerprint(projectStudioCopy(blueprint)) !== managedSiteStableFingerprint(copy)) studioConflict()
   return blueprint
 }

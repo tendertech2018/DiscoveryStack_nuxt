@@ -3,6 +3,7 @@ import { stableFingerprint } from '../seo-geo-core/repository'
 import { MANAGED_SITE_CATALOG_VERSION, MANAGED_SITE_TYPES, type ManagedSiteType } from './types'
 import { assertPublicHttpsUrl } from '../content-operations/normalization'
 import { managedSiteStableFingerprint } from './live-connectors/canonical'
+import { normalizeSiteLanguage } from '../../utils/managedSiteLanguage'
 
 export const SITE_SPEC_VERSION = 'site-spec-v1'
 export const STYLE_PROFILE_VERSION = 'style-profile-v1'
@@ -67,7 +68,7 @@ export type StyleProfile = {
 export type SiteSpec = {
   schemaVersion: typeof SITE_SPEC_VERSION
   draftIdentity: string
-  locale: 'en' | 'zh-hant'
+  locale: string
   businessIdentity: {
     brandName: string
     audience: string
@@ -113,7 +114,7 @@ export type SiteSpec = {
 
 export type SiteBriefInput = {
   draftIdentity: string
-  locale?: 'en' | 'zh-hant'
+  locale?: string
   brandName: string
   audience: string
   brief: string
@@ -260,7 +261,7 @@ export function buildSiteSpec(input: unknown, capturedAt = new Date()): SiteSpec
   const draft: Omit<SiteSpec, 'deterministicFingerprint'> = {
     schemaVersion: SITE_SPEC_VERSION,
     draftIdentity,
-    locale: candidate.locale === 'en' ? 'en' : 'zh-hant',
+    locale: candidate.locale === undefined ? 'zh-hant' : normalizeSiteLanguage(candidate.locale) || invalid('Website language is invalid.'),
     businessIdentity: { brandName, audience, brief },
     businessGoals,
     siteType,
@@ -292,6 +293,7 @@ export function buildSiteSpec(input: unknown, capturedAt = new Date()): SiteSpec
 export function parseSiteSpecSnapshot(input: unknown): SiteSpec {
   if (!input || typeof input !== 'object' || Array.isArray(input)) invalid('Persisted SiteSpec is invalid.')
   const candidate = input as Partial<SiteSpec>
+  if (!normalizeSiteLanguage(candidate.locale)) invalid('Persisted website language is invalid.')
   if (candidate.customerSitePreset !== undefined && !(CUSTOMER_SITE_PRESETS as readonly string[]).includes(candidate.customerSitePreset)) invalid('Persisted customer site preset is invalid.')
   if (candidate.schemaVersion !== SITE_SPEC_VERSION || typeof candidate.deterministicFingerprint !== 'string' || !candidate.businessIdentity || typeof candidate.businessIdentity !== 'object') invalid('Persisted SiteSpec version or identity is invalid.')
   if (!Array.isArray(candidate.businessGoals) || !candidate.businessGoals.length || candidate.businessGoals.some(value => typeof value !== 'string' || !(BUSINESS_GOALS as readonly string[]).includes(value))) invalid('Persisted SiteSpec business goals are invalid.')

@@ -7,6 +7,8 @@ import type { ManagedSiteBlueprintV1 } from '../live-connectors/types'
 import { renderManagedSiteMetadataHead as metadataHead } from '../seo-metadata'
 import { buildManagedPageTransportEnvelope } from './transport'
 import type { CompiledPageArtifact, ResponsiveMediaProjection } from './types'
+import { htmlSiteLanguage, siteTextDirection } from '../../../utils/managedSiteLanguage'
+import { renderManagedSitePublicKnowledge } from '../public-knowledge'
 
 const HTML = 'text/html; charset=utf-8'
 const ARTICLE_TYPES = new Set(['article', 'faq', 'service_page'])
@@ -79,7 +81,7 @@ function designCss(design?: CompiledPageArtifact['design']): string {
 }
 
 function pageShell(input: { blueprint: ManagedSiteBlueprintV1; canonicalOrigin: string; locale: string; title: string; description: string; canonicalPath: string; noindex: boolean; body: string; design?: CompiledPageArtifact['design']; article?: boolean; faq?: Array<{ question: string; answer: string }> }): string {
-  return `<!doctype html><html lang="${input.locale === 'zh-hant' ? 'zh-Hant' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(input.title)} — ${escapeHtml(input.blueprint.brandName)}</title><meta name="description" content="${escapeHtml(input.description)}">${input.noindex ? '<meta name="robots" content="noindex,nofollow">' : ''}${metadataHead(input)}<style>${SITE_STYLE}${designCss(input.design)}</style></head><body><header><strong>${escapeHtml(input.blueprint.brandName)}</strong><nav aria-label="Primary">${navigation(input.blueprint)}</nav></header><main>${input.body}</main><footer>${escapeHtml(input.blueprint.seoGeo.evidenceLimitations.join(' · '))}</footer></body></html>`
+  return `<!doctype html><html lang="${htmlSiteLanguage(input.locale)}" dir="${siteTextDirection(input.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(input.title)} — ${escapeHtml(input.blueprint.brandName)}</title><meta name="description" content="${escapeHtml(input.description)}">${input.noindex ? '<meta name="robots" content="noindex,nofollow">' : ''}${metadataHead(input)}<style>${SITE_STYLE}${designCss(input.design)}</style></head><body><header><strong>${escapeHtml(input.blueprint.brandName)}</strong><nav aria-label="Primary">${navigation(input.blueprint)}</nav></header><main>${input.body}</main><footer>${escapeHtml(input.blueprint.seoGeo.evidenceLimitations.join(' · '))}</footer></body></html>`
 }
 
 function resolvedSources(media: ResponsiveMediaProjection, resolveMediaReference: ManagedSiteMediaReferenceResolver): { src: string; srcset: string } {
@@ -237,5 +239,7 @@ export function renderManagedSiteNativeStaticAssets(input: { bundle: ManagedSite
   const indexableRoutes = [...assets.values()].filter(asset => asset.contentType.startsWith('text/html') && !/<meta\s+name="robots"\s+content="[^"]*noindex/iu.test(asset.content)).map(asset => asset.path === 'index.html' ? '/' : `/${asset.path.slice(0, -'/index.html'.length)}`).sort()
   assets.set('sitemap.xml', { path: 'sitemap.xml', contentType: 'application/xml; charset=utf-8', content: `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${indexableRoutes.map(route => `<url><loc>${escapeHtml(`${canonicalOrigin}${route}`)}</loc></url>`).join('')}</urlset>` })
   assets.set('robots.txt', { path: 'robots.txt', contentType: 'text/plain; charset=utf-8', content: `User-agent: *\nAllow: /\nSitemap: ${canonicalOrigin}/sitemap.xml\n` })
+  // Rebuild after overlays and approved articles, never from the stale base blueprint.
+  for (const asset of renderManagedSitePublicKnowledge(input.bundle.blueprint, canonicalOrigin, [...assets.values()])) assets.set(asset.path, asset)
   return [...assets.values()].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
 }

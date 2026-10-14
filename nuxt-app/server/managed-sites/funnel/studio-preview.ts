@@ -1,7 +1,11 @@
 import { createError } from 'h3'
+import { normalizeSiteLanguage, initialStudioLanguage } from '../../../utils/managedSiteLanguage'
+import { clearlyUnrelatedStudioRequest } from '../../../utils/managedSiteGuided'
+import { EN_STUDIO_CHROME, ZH_STUDIO_CHROME, DEFAULT_STUDIO_DESIGN } from '../../../utils/managedSitePresentation'
 import type { ManagedSiteFunnelSession } from '../../database/schema'
 import {
   studioAnswers,
+  studioRequiredModules,
   STUDIO_DIRECTIONS,
   type StudioBrief,
   type StudioPreview,
@@ -49,6 +53,7 @@ export function parseStudioRequest(
           'goal',
           'mode',
           'revision',
+          'language', 'audience', 'market', 'guidedRevision',
         ].includes(key)
     )
   )
@@ -84,7 +89,7 @@ export function parseStudioRequest(
       fail()
     const value = body.revision as Record<string, unknown>
     if (
-      Object.keys(value).some(key => !['base', 'instruction', 'proposalId'].includes(key)) ||
+      Object.keys(value).some(key => !['base', 'instruction', 'proposalId', 'pageKey'].includes(key)) ||
       !Object.hasOwn(value, 'base') ||
       !Object.hasOwn(value, 'instruction')
     )
@@ -102,6 +107,7 @@ export function parseStudioRequest(
       instruction: text(value.instruction, 600),
       base: value.base as NonNullable<StudioPreviewRequest['revision']>['base'],
       ...(value.proposalId !== undefined ? { proposalId: text(value.proposalId, 64) } : {}),
+      ...(value.pageKey !== undefined ? { pageKey: ['home', 'about', 'services', 'faq', 'contact', 'blog', 'shop'].includes(String(value.pageKey)) ? value.pageKey as NonNullable<StudioPreviewRequest['revision']>['pageKey'] : fail() } : {}),
     }
   }
   return {
@@ -111,6 +117,10 @@ export function parseStudioRequest(
     goal: body.goal as StudioBrief['goal'],
     mode: body.mode === 'ai' ? 'ai' : 'template',
     ...(revision ? { revision } : {}),
+    ...(body.language !== undefined ? { language: normalizeSiteLanguage(body.language) || fail() } : {}),
+    ...(body.audience !== undefined ? { audience: text(body.audience, 360) } : {}),
+    ...(body.market !== undefined ? { market: text(body.market, 360) } : {}),
+    ...(body.guidedRevision !== undefined ? { guidedRevision: Number.isSafeInteger(body.guidedRevision) && Number(body.guidedRevision) >= 0 ? Number(body.guidedRevision) : fail() } : {}),
   }
 }
 
@@ -120,6 +130,7 @@ export async function generateStudioPreview(
   input: ReturnType<typeof parseStudioRequest>,
   dependencies: FunnelPreviewDraftDependencies = {}
 ): Promise<StudioPreview> {
+  if (clearlyUnrelatedStudioRequest(input.revision?.instruction || input.brief)) throw createError({ statusCode: 422, statusMessage: 'Please ask about your website. Your draft is unchanged.', data: { code: 'STUDIO_GUIDANCE', message: initialStudioLanguage(input.revision?.instruction || input.brief, input.language).startsWith('zh') ? '我只協助建立與修改網站，這次沒有改動草稿或呼叫付費 AI。' : 'I help create and edit websites. Your draft is unchanged; no paid AI call was made.' } })
   if (session.status !== 'active')
     throw createError({
       statusCode: 409,
@@ -142,6 +153,10 @@ export async function generateStudioPreview(
         onStrategy: value => {
           strategy = value
         },
+        design: dependencies.studioDesign,
+        basePresentation: dependencies.studioBasePresentation,
+        media: dependencies.studioMedia,
+        brandStyle: dependencies.studioStyle,
       })
     : undefined
   const previewSession = {
@@ -149,7 +164,7 @@ export async function generateStudioPreview(
     answers: {
       ...studioAnswers(input, 'atelier'),
       existingSite: { hasSite: false },
-      modules: input.siteType === 'simple_commerce' ? ['shopify_commerce'] : [],
+      modules: studioRequiredModules(input),
     },
   }
   const draft = await generateFunnelPreviewDraft(previewSession, {
@@ -162,14 +177,13 @@ export async function generateStudioPreview(
     },
     siteSpec: buildSiteSpec({
       draftIdentity: `managed-site-studio-${session.id}`,
-      locale: 'zh-hant',
+      locale: input.language || initialStudioLanguage(input.brief),
       brandName: input.brandName,
-      audience: '品牌網站訪客',
+      audience: input.audience || 'Website visitors',
       brief: input.brief,
       businessGoals: [input.goal],
       siteType: input.siteType,
-      selectedModules:
-        input.siteType === 'simple_commerce' ? ['shopify_commerce'] : [],
+      selectedModules: studioRequiredModules(input),
       styleReferences: [],
     }),
     // This service renders every page in all three presets below; avoid rendering them twice.
@@ -188,6 +202,7 @@ export async function generateStudioPreview(
       statusMessage: '網站草稿暫時無法顯示。',
     })
   const finalBlueprint: ManagedSiteBlueprintV1 = blueprint
+  if (!finalBlueprint.studioPresentation && input.language && draft.source === 'template') finalBlueprint.studioPresentation = { version: 'studio-presentation-v1', renderer: 'brand-studio-v2', design: dependencies.studioDesign || DEFAULT_STUDIO_DESIGN, chrome: { ...(input.language.startsWith('zh') ? ZH_STUDIO_CHROME : EN_STUDIO_CHROME) }, ...(dependencies.studioMedia?.length ? { media: dependencies.studioMedia } : {}) }
   dependencies.onBlueprint?.(finalBlueprint)
   return renderStudioProposal(finalBlueprint, {
     source: draft.source,
@@ -212,7 +227,7 @@ export function renderStudioProposal(finalBlueprint: ManagedSiteBlueprintV1, met
   }))
   const pages = finalBlueprint.pages.map(page => ({
     key: page.pageKey,
-    label: STUDIO_PAGE_LABELS[page.pageKey],
+    label: finalBlueprint.navigation.find(item => item.route === page.route)?.label || STUDIO_PAGE_LABELS[page.pageKey],
     designs: variants.map(variant => ({
       preset: variant.preset,
       html: inertPreviewDocument(
@@ -228,6 +243,8 @@ export function renderStudioProposal(finalBlueprint: ManagedSiteBlueprintV1, met
   }))
   return {
     ...metadata,
+    language: finalBlueprint.locale,
+    ...(finalBlueprint.studioPresentation ? { design: finalBlueprint.studioPresentation.design, deliveryReview: { layoutOnly: metadata.source !== 'llm', missingHeroImage: !finalBlueprint.studioPresentation.media?.some(image => image.slot === 'hero'), unactivatedModules: finalBlueprint.selectedModulePlacements.filter(item => item.mode === 'safe_placeholder').map(item => item.moduleKey), viewportReviewRequired: true as const, referencePixelMatchVerified: false as const } } : {}),
     headline: finalBlueprint.pages[0]!.title,
     sections: finalBlueprint.pages[0]!.sections.map(({ heading, body }) => ({ heading, body })),
     designs: pages[0]!.designs,

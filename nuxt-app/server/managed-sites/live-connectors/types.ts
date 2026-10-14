@@ -10,6 +10,7 @@ import type {
   ManagedSiteReleaseProjection,
 } from '../../database/schema'
 import type { ManagedSiteModuleFulfilmentRepository } from '../funnel/module-fulfilment'
+import type { StudioPresentation } from '../../../utils/managedSitePresentation'
 
 export const MANAGED_SITE_CONNECTOR_CAPABILITIES = ['website_generator', 'payment', 'domain_registration', 'dns_tls', 'deployment'] as const
 export type ManagedSiteConnectorCapability = typeof MANAGED_SITE_CONNECTOR_CAPABILITIES[number]
@@ -116,7 +117,9 @@ export type ManagedSiteBlueprintV1 = {
   /** Optional for existing immutable v1 bundles; when present, bound to the server SiteSpec. */
   customerSitePreset?: 'atelier' | 'bloom' | 'alignment'
   brandName: string
-  locale: 'en' | 'zh-hant'
+  locale: string
+  /** Optional for old immutable bundles; compiler output and content hash bind this value. */
+  studioPresentation?: StudioPresentation
   siteType: 'one_page' | 'brand_blog' | 'simple_commerce'
   navigation: Array<{ label: string; route: string }>
   pages: Array<{ pageKey: 'home' | 'about' | 'services' | 'faq' | 'contact' | 'blog' | 'shop'; route: string; title: string; description: string; sections: ManagedSiteBlueprintSectionV1[] }>

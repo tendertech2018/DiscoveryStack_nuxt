@@ -9,11 +9,11 @@ sample.editContext = { schemaVersion: 'managed-site-preview-copy-v1', navigation
 sample.pages = [{ key: 'home', label: '首頁', designs: sample.designs }, { key: 'about', label: '品牌故事', designs: sample.designs.map(design => ({ ...design, html: '<html>About</html>' })) }]
 const edited: utility.StudioPreview = { ...structuredClone(sample), source: 'llm', headline: '新標題', changes: [{ key: 'page:home:title', label: '首頁', before: '首頁', after: '新標題' }] }
 function harness(requestPreview = vi.fn(async (_input: any) => structuredClone(sample)), initial?: utility.StudioBrief, draft?: utility.StudioSelection) {
-  const props = { requestPreview, saving: false, initial, draft, saveError: '', confirmed: null as null | { proposalId: string; preset: utility.StudioPreset } }
+  const props = { requestPreview, requestDesign: undefined as undefined | ((id: string, patch: unknown) => Promise<utility.StudioPreview>), saving: false, initial, draft, saveError: '', confirmed: null as null | { proposalId: string; preset: utility.StudioPreset } }
   const emit = vi.fn()
   let unmount = () => {}
   const vue = { ref: (value: unknown) => ({ value }), computed: (getter: () => unknown) => ({ get value() { return getter() } }), nextTick: () => Promise.resolve() }
-  const script = ts.transpileModule(`${source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/u)![1]}\nexport { brief, result, busy, dirty, revision, history, canContinue, selectedPreset, generate, undo, continueWithDesign, useExample, examples, proposeRevision, applyRevision, discardRevision, pending, visibleResult, previewView, currentPage, selectedDesign, canApply, error, notice, showingConfirmed };`, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
+  const script = ts.transpileModule(`${source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/u)![1]}\nexport { brief, result, busy, dirty, revision, history, canContinue, selectedPreset, generate, undo, continueWithDesign, useExample, examples, proposeRevision, applyRevision, discardRevision, pending, visibleResult, previewView, currentPage, selectedDesign, canApply, error, notice, showingConfirmed, refineDesign };`, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
   const module = { exports: {} as any }
   new Function('require', 'module', 'exports', 'defineProps', 'defineEmits', script)((name: string) => name === 'vue' ? { ...vue, onBeforeUnmount: (callback: () => void) => { unmount = callback } } : utility, module, module.exports, () => props, () => emit)
   const page = module.exports
@@ -22,6 +22,22 @@ function harness(requestPreview = vi.fn(async (_input: any) => structuredClone(s
 }
 
 describe('real design studio script behavior', () => {
+  it.each(['bloom', 'alignment'] as const)('preserves the selected %s layout during free visual edits and restores it with undo', async preset => {
+    const f = harness()
+    await f.page.generate()
+    f.page.result.value = { ...structuredClone(sample), proposalId: 'a'.repeat(64) }
+    f.page.selectedPreset.value = preset
+    const requestDesign = vi.fn(async () => ({ ...structuredClone(sample), proposalId: 'b'.repeat(64) }))
+    f.props.requestDesign = requestDesign
+    await f.page.refineDesign({ typography: 'sans' })
+    expect(requestDesign).toHaveBeenCalledWith('a'.repeat(64), { typography: 'sans' })
+    expect(f.page.selectedPreset.value).toBe(preset)
+    expect(f.page.result.value.editContext).toEqual(sample.editContext)
+    expect(f.requestPreview).toHaveBeenCalledTimes(1)
+    f.page.undo()
+    expect(f.page.result.value.proposalId).toBe('a'.repeat(64))
+    expect(f.page.selectedPreset.value).toBe(preset)
+  })
   it('only labels the exact server-confirmed version and preset as confirmed', async () => {
     const { page, props } = harness()
     await page.generate()
@@ -121,6 +137,14 @@ describe('real design studio script behavior', () => {
     expect(source).toContain(':aria-pressed="selectedPreset === direction.key"')
     expect(source).toContain('role="alert"')
     expect(source).not.toMatch(/v-html|allow-scripts|allow-same-origin|localStorage|sessionStorage|fetch\(/u)
+  })
+  it('preserves a complete brief after off-topic guidance and avoids implicit generation on Enter', () => {
+    const guided = readFileSync(new URL('../components/StudioGuidedIntake.vue', import.meta.url), 'utf8')
+    expect(guided).toContain("if (next.brief) emit('ready', next.brief)")
+    expect(guided).toContain('v-if="state?.brief" class="ready"')
+    expect(source).toContain('@submit.prevent="!requestIntake && generate(\'ai\')"')
+    const images = readFileSync(new URL('../components/StudioBrandImages.vue', import.meta.url), 'utf8')
+    expect(images).toContain("if (fileInput.value) fileInput.value.value = ''")
   })
   it('switches real pages without provider calls and can discard a proposal without losing the original', async () => {
     const { page, requestPreview } = harness()

@@ -8,6 +8,8 @@ import { BUSINESS_GOALS, SITE_MODULES } from '../site-spec'
 import { MANAGED_SITE_TYPES } from '../types'
 import { funnelSessionRevision, getFunnelSessionRepository, type FunnelSessionRepository } from './session-repository'
 import { studioContentAnswersFingerprint, type FunnelStudioState } from './studio-state'
+import type { StudioIntakeState } from '../../../utils/managedSiteGuided'
+import { normalizeSiteLanguage } from '../../../utils/managedSiteLanguage'
 
 export const MANAGED_SITE_FUNNEL_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14
 export const MANAGED_SITE_FUNNEL_TOTAL_STEPS = 9
@@ -22,13 +24,14 @@ type ExistingSiteSnapshot = {
 
 export type FunnelAnswers = {
   studio?: FunnelStudioState
+  studioIntake?: StudioIntakeState
   existingSite?: {
     hasSite: boolean
     url?: string
     diagnosisId?: number | null
     snapshot?: ExistingSiteSnapshot
   }
-  company?: { brandName: string; whatWeDo: string; feelings: string[]; mainOffer: string; conversionGoals: string[] }
+  company?: { brandName: string; whatWeDo: string; feelings: string[]; mainOffer: string; conversionGoals: string[]; language?: string }
   contact?: { email: string; contactName: string; phone?: string }
   style?: { referenceUrls: string[]; stylePreset?: 'minimal' | 'business' | 'premium' | 'warm' | 'lively' | 'tech'; customerSitePreset?: 'atelier' | 'bloom' | 'alignment'; designTier: 'template' | 'designer' }
   siteType?: 'one_page' | 'brand_blog' | 'simple_commerce'
@@ -121,7 +124,8 @@ function validateAnswers(input: unknown): Partial<FunnelAnswers> {
     output.existingSite = { hasSite: value.hasSite, ...(url ? { url } : {}), ...(diagnosisId !== undefined ? { diagnosisId } : {}) }
   }
   if ('company' in candidate) {
-    const value = exactObject(candidate.company, ['brandName', 'whatWeDo', 'feelings', 'mainOffer', 'conversionGoals'], 'Company answer')
+    const value = exactObject(candidate.company, ['brandName', 'whatWeDo', 'feelings', 'mainOffer', 'conversionGoals', 'language'], 'Company answer')
+    if (value.language !== undefined && !normalizeSiteLanguage(value.language)) invalid('Website language is invalid.')
     const conversionGoals = stringArray(value.conversionGoals, 'Conversion goals', { maxItems: BUSINESS_GOALS.length, maxLength: 80 })
     if (!conversionGoals.length || !conversionGoals.every(goal => (BUSINESS_GOALS as readonly string[]).includes(goal))) invalid('Conversion goals contain an unsupported value.')
     output.company = {
@@ -130,6 +134,7 @@ function validateAnswers(input: unknown): Partial<FunnelAnswers> {
       feelings: stringArray(value.feelings, 'Brand feelings', { maxItems: 12, maxLength: 120 }),
       mainOffer: requiredString(value.mainOffer, 'Main offer', 1000),
       conversionGoals,
+      ...(value.language !== undefined ? { language: normalizeSiteLanguage(value.language)! } : {}),
     }
   }
   if ('contact' in candidate) {

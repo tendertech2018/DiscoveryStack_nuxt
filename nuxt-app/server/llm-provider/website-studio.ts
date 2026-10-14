@@ -1,7 +1,16 @@
 import { createOpenAiCompatibleChatClient, resolveOpenAiCompatibleProviderConfiguration, type OpenAiCompatibleProviderConfiguration } from './openai-compatible'
 import { createAnthropicStudioClient, resolveAnthropicStudioConfiguration, type AnthropicStudioConfiguration } from './anthropic'
+import { createError } from 'h3'
 
 export type WebsiteStudioProviderConfiguration = OpenAiCompatibleProviderConfiguration | AnthropicStudioConfiguration
+
+/** An optional caller restriction can narrow, never change, the server-owned provider. */
+export function assertStudioProviderRequirement(required: string | undefined, configuration?: WebsiteStudioProviderConfiguration): void {
+  if (!required) return
+  if (required !== 'anthropic') throw createError({ statusCode: 400, statusMessage: 'Unsupported provider requirement.' })
+  const current = configuration || resolveWebsiteStudioProviderConfiguration()
+  if (!current.configured || current.providerLabel !== 'anthropic') throw createError({ statusCode: 412, statusMessage: 'The requested Claude provider is not configured. No model call was made.' })
+}
 
 /** This switch is studio-only; it cannot alter GEO, editor, training or observation providers. */
 export function resolveWebsiteStudioProviderConfiguration(input: { env?: Record<string, string | undefined>; runtimeConfig?: Record<string, unknown> } = {}): WebsiteStudioProviderConfiguration {

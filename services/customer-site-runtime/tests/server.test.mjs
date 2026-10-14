@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
+import { createHmac } from 'node:crypto'
 import { createSiteRuntime } from '../server.mjs'
 import { seedPreview } from '../lib/seed.mjs'
 const origin = 'http://127.0.0.1:3002'
@@ -14,6 +15,47 @@ async function call(runtime, path, { method = 'GET', body, headers = {}, cookie,
   return result
 }
 async function session(runtime) { const r = await call(runtime, '/api/session'); return { cookie: r.headers['set-cookie'].split(';')[0], csrf: r.json.csrfToken } }
+test('Stripe webhook is signature-only; missing configuration blocks inventory reservation and checkout UI', async () => {
+  const config = { siteId: 'stripe-http', siteType: 'commerce', mode: 'preview', brandName: 'Synthetic', commerce: { paymentMode: 'stripe_test' } }
+  const r = createSiteRuntime({ config, origin })
+  try {
+    seedPreview(r); const s = await session(r)
+    const stock = r.commerce.listProducts()[0].stock
+    const created = await call(r, '/api/orders', { ...s, method: 'POST', body: { items: [] } })
+    assert.equal(created.statusCode, 503); assert.equal(r.commerce.listProducts()[0].stock, stock)
+    assert.match((await call(r, '/checkout')).data, /type="submit" disabled/)
+    assert.equal((await call(r, '/api/payments/stripe/webhook', { method: 'POST', body: {} })).statusCode, 503)
+  } finally { r.close() }
+  const secret = 'whsec_fixtureOnlyNotReal0000'
+  const ready = createSiteRuntime({ config, origin, stripe: { secretKey: 'sk_test_fixtureOnlyNotReal0000', webhookSecret: secret, fetchImpl: () => { throw new Error('No external calls allowed') } } })
+  try {
+    const body = { id: 'evt_http_fixture', type: 'unused.event', livemode: false, data: { object: {} } }
+    const timestamp = Math.floor(Date.now() / 1000)
+    const signature = `t=${timestamp},v1=${createHmac('sha256', secret).update(`${timestamp}.${JSON.stringify(body)}`).digest('hex')}`
+    assert.equal((await call(ready, '/api/payments/stripe/webhook', { method: 'POST', body, headers: { origin: undefined } })).statusCode, 400)
+    const result = await call(ready, '/api/payments/stripe/webhook', { method: 'POST', body, headers: { origin: undefined, 'stripe-signature': signature } })
+    assert.equal(result.statusCode, 200); assert.equal(result.json.ignored, true)
+    assert.equal((await call(ready, '/api/contact', { method: 'POST', body, headers: { origin: undefined, 'stripe-signature': signature } })).statusCode, 403)
+    assert.match((await call(ready, '/checkout')).data, /Stripe 測試環境/)
+    assert.equal((await call(ready, '/api/admin/settings')).statusCode, 401)
+  } finally { ready.close() }
+})
+test('guest booking receipt supports private lookup and CSRF-protected cancellation without login', async () => {
+  const r = fixture('booking_blog')
+  try {
+    const s = await session(r), slot = r.booking.listSlots()[0]
+    const created = await call(r, '/api/booking-requests', { ...s, method: 'POST', body: { serviceId: slot.serviceId, slotId: slot.id, name: 'Synthetic', email: 'fixture@example.invalid', phone: '0900000000', consent: true, idempotencyKey: 'guest-http-private' } })
+    assert.equal(created.statusCode, 201); assert.equal(created.json.notification.configured, false)
+    const path = `/api/booking-requests/${created.json.id}`
+    assert.equal((await call(r, path)).statusCode, 404)
+    const headers = { 'x-booking-token': created.json.accessToken }
+    const detail = await call(r, path, { headers }); assert.equal(detail.statusCode, 200); assert.equal(detail.json.accessToken, undefined)
+    assert.equal((await call(r, path, { method: 'PATCH', headers, body: { action: 'cancel', version: detail.json.version } })).statusCode, 403)
+    const cancelled = await call(r, path, { ...s, method: 'PATCH', headers, body: { action: 'cancel', version: detail.json.version } })
+    assert.equal(cancelled.json.status, 'cancelled'); assert.equal(r.booking.listSlots()[0].available, true)
+    assert.equal((await call(r, '/booking')).statusCode, 200)
+  } finally { r.close() }
+})
 test('real HTTP handler serves assets, checks host/origin/CSRF and hides admin data', async () => {
   const r = fixture()
   try {

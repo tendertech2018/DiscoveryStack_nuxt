@@ -91,16 +91,16 @@ function settings(config) {
   const currency = commerce.currency ?? 'TWD'
   if (currency !== 'TWD') fail(500, '目前商店僅支援 TWD', 'COMMERCE_CONFIG_INVALID')
   const requestedMode = commerce.paymentMode ?? 'disabled'
-  if (!['disabled', 'manual', 'sandbox'].includes(requestedMode)) fail(500, '付款模式設定不正確', 'COMMERCE_CONFIG_INVALID')
+  if (!['disabled', 'manual', 'sandbox', 'stripe_test', 'stripe_live'].includes(requestedMode)) fail(500, '付款模式設定不正確', 'COMMERCE_CONFIG_INVALID')
   const production = config?.production === true || config?.mode === 'production' || config?.runtimeMode === 'production'
   return Object.freeze({
     currency,
     production,
     requestedPaymentMode: requestedMode,
-    paymentMode: production && requestedMode === 'sandbox' ? 'disabled' : requestedMode,
+    paymentMode: production && ['sandbox', 'stripe_test'].includes(requestedMode) || !production && requestedMode === 'stripe_live' ? 'disabled' : requestedMode,
     shippingFeeMinor: configInteger(commerce.shippingFeeMinor, '運費', 120, 0, MAX_MONEY),
     freeShippingThresholdMinor: configInteger(commerce.freeShippingThresholdMinor, '免運門檻', 8_000, 0, MAX_MONEY),
-    orderHoldMinutes: configInteger(commerce.orderHoldMinutes, '訂單保留分鐘', 30, 1, 10_080),
+    orderHoldMinutes: Math.max(requestedMode.startsWith('stripe_') ? 40 : 1, configInteger(commerce.orderHoldMinutes, '訂單保留分鐘', 30, 1, 10_080)),
   })
 }
 
@@ -282,7 +282,7 @@ function issueToken(db, orderId, at) {
   return accessToken
 }
 
-function restoreOrderInventory(db, orderId, at) {
+export function restoreOrderInventory(db, orderId, at) {
   const items = db.prepare(`
     SELECT product_id, variant_id, quantity FROM commerce_order_items WHERE order_id=?
   `).all(orderId)
@@ -656,7 +656,7 @@ export function createCommerce(db, config = {}) {
 
       if (action === 'cancel') {
         if (row.fulfillment_status === 'cancelled') return orderView(db, row)
-        if (row.payment_status === 'paid') fail(409, '已付款訂單須先記錄退款，不能直接取消', 'REFUND_REQUIRED')
+        if (['paid', 'review_required'].includes(row.payment_status)) fail(409, '已收款或待對帳訂單須先確認退款，不能直接取消', 'REFUND_REQUIRED')
         if (['shipped', 'delivered'].includes(row.fulfillment_status)) fail(409, '已出貨訂單不能直接取消', 'FULFILLMENT_TRANSITION_BLOCKED')
         const note = optionalText(input.note, '取消備註', 500)
         const changed = db.prepare(`
@@ -669,6 +669,7 @@ export function createCommerce(db, config = {}) {
       }
 
       if (action === 'refund') {
+        if (row.payment_mode.startsWith('stripe_')) fail(409, 'Stripe 退款須由金流確認，不能以人工紀錄代替', 'PROVIDER_REFUND_REQUIRED')
         if (row.payment_status === 'refunded') return orderView(db, row)
         if (row.payment_status !== 'paid') fail(409, '只有已付款訂單能記錄退款', 'REFUND_TRANSITION_BLOCKED')
         const reference = text(input.reference, '人工退款參考', 120)

@@ -4,6 +4,8 @@ import { SITE_MODULES, type SiteModule, type SiteSpec } from '../site-spec'
 import type { ManagedSiteBlueprintProviderOutput, ManagedSiteBlueprintSectionV1, ManagedSiteBlueprintV1, ManagedSiteGeneratedFile, ManagedSiteGenerationRequest } from './types'
 import { compareCodeUnits, managedSiteStableFingerprint } from './canonical'
 import { normalizePublicSiteOrigin } from '../../utils/publicCors'
+import { isStudioPresentation } from '../../../utils/managedSitePresentation'
+import { normalizeSiteLanguage } from '../../../utils/managedSiteLanguage'
 
 export const MANAGED_SITE_BLUEPRINT_MAX_BYTES = 256_000
 const TEXT_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u
@@ -72,7 +74,9 @@ export function validateManagedSiteBlueprintProviderOutput(input: unknown, reque
   const providerRequestId = text(input.providerRequestId, 'Blueprint provider request identity', 160)
   if (!record(input.blueprint)) blocked('Managed-site blueprint is missing.')
   const raw = input.blueprint
-  exact(raw, ['schemaVersion', 'brandName', 'locale', 'siteType', 'navigation', 'pages', 'faq', 'selectedModulePlacements', 'seoGeo', 'provenance', ...(Object.hasOwn(raw, 'customerSitePreset') ? ['customerSitePreset'] : [])])
+  exact(raw, ['schemaVersion', 'brandName', 'locale', 'siteType', 'navigation', 'pages', 'faq', 'selectedModulePlacements', 'seoGeo', 'provenance', ...(Object.hasOwn(raw, 'customerSitePreset') ? ['customerSitePreset'] : []), ...(Object.hasOwn(raw, 'studioPresentation') ? ['studioPresentation'] : [])])
+  if (!normalizeSiteLanguage(raw.locale)) blocked('Blueprint language is invalid.')
+  if (Object.hasOwn(raw, 'studioPresentation') && !isStudioPresentation(raw.studioPresentation)) blocked('Blueprint presentation is invalid.')
   const spec = request.siteSpec as SiteSpec
   if (Object.hasOwn(raw, 'customerSitePreset') && (!['atelier', 'bloom', 'alignment'].includes(String(raw.customerSitePreset)) || raw.customerSitePreset !== spec.customerSitePreset)) blocked('Blueprint design does not match the server-selected SiteSpec.')
   if (raw.schemaVersion !== 'managed-site-blueprint-v1' || raw.locale !== spec.locale || raw.siteType !== spec.siteType || text(raw.brandName, 'Blueprint brand', 160) !== spec.businessIdentity.brandName) blocked('Managed-site blueprint does not match the exact SiteSpec identity.')
@@ -129,6 +133,7 @@ export function validateManagedSiteBlueprintProviderOutput(input: unknown, reque
   if (raw.provenance.evidenceSnapshotHash !== request.evidenceConstraints.evidenceSnapshotHash || !Array.isArray(raw.provenance.authoritySourceIds) || JSON.stringify([...raw.provenance.authoritySourceIds].sort()) !== JSON.stringify([...request.evidenceConstraints.authoritySourceIds].sort()) || typeof raw.provenance.providerContentHash !== 'string' || !/^[a-f0-9]{64}$/u.test(raw.provenance.providerContentHash)) blocked('Blueprint provenance is not bound to the exact evidence request.')
   const blueprint: ManagedSiteBlueprintV1 = { schemaVersion: 'managed-site-blueprint-v1', brandName: spec.businessIdentity.brandName, locale: spec.locale, siteType: spec.siteType, navigation, pages, faq, selectedModulePlacements: placements, seoGeo: { summaryAnswer: text(raw.seoGeo.summaryAnswer, 'Blueprint GEO summary', 2_000), canonicalPlaceholder: '{{CANONICAL_ORIGIN}}', organizationName: text(raw.seoGeo.organizationName, 'Blueprint organization', 160), evidenceLimitations: raw.seoGeo.evidenceLimitations.map(item => text(item, 'Blueprint evidence limitation', 1_000)), structuredDataKinds: raw.seoGeo.structuredDataKinds as ManagedSiteBlueprintV1['seoGeo']['structuredDataKinds'] }, provenance: { evidenceSnapshotHash: String(raw.provenance.evidenceSnapshotHash), authoritySourceIds: [...request.evidenceConstraints.authoritySourceIds].sort(), providerContentHash: String(raw.provenance.providerContentHash) } }
   if (raw.customerSitePreset !== undefined) blueprint.customerSitePreset = raw.customerSitePreset as ManagedSiteBlueprintV1['customerSitePreset']
+  if (raw.studioPresentation !== undefined) blueprint.studioPresentation = structuredClone(raw.studioPresentation as NonNullable<ManagedSiteBlueprintV1['studioPresentation']>)
   const blueprintHash = managedSiteStableFingerprint(blueprint)
   if (input.blueprintHash !== blueprintHash) blocked('Blueprint hash does not match the deterministic structured result.')
   return { output: { schemaVersion: 'managed-site-blueprint-provider-response-v1', providerKey, providerModel, providerRequestId, requestFingerprint: request.requestFingerprint, blueprint, blueprintHash }, blueprint, blueprintHash }
@@ -152,7 +157,7 @@ export function compileManagedSiteBlueprint(blueprint: ManagedSiteBlueprintV1): 
       return `<section id="${section.sectionId}" data-section-kind="${section.kind}"${section.moduleKey ? ` data-module-slot="${section.moduleKey}"` : ''}><h2>${escapeHtml(section.heading)}</h2><p>${escapeHtml(section.body)}</p>${section.ctaLabel && section.ctaHref ? `<a class="cta" href="${section.ctaHref}">${escapeHtml(section.ctaLabel)}</a>` : ''}${section.kind === 'module_slot' ? '<p class="module-note">Configuration is completed only through the private owner workbench. This preview performs no external action.</p>' : ''}${contactForm}</section>`
     }).join('')
     const faq = page.pageKey === 'faq' ? `<section id="faq-items" data-schema-kind="FAQPage">${blueprint.faq.map(item => `<article><h2>${escapeHtml(item.question)}</h2><p>${escapeHtml(item.answer)}</p></article>`).join('')}</section>` : ''
-    const metadata = escapeHtml(JSON.stringify({ canonical: blueprint.seoGeo.canonicalPlaceholder, kinds: blueprint.seoGeo.structuredDataKinds, evidenceLimitations: blueprint.seoGeo.evidenceLimitations, ...(blueprint.customerSitePreset ? { customerSitePreset: blueprint.customerSitePreset } : {}) }))
+    const metadata = escapeHtml(JSON.stringify({ canonical: blueprint.seoGeo.canonicalPlaceholder, kinds: blueprint.seoGeo.structuredDataKinds, evidenceLimitations: blueprint.seoGeo.evidenceLimitations, ...(blueprint.customerSitePreset ? { customerSitePreset: blueprint.customerSitePreset } : {}), ...(blueprint.studioPresentation ? { studioPresentation: blueprint.studioPresentation } : {}) }))
     const content = `---\nimport '../styles/site.css'\nconst managedMetadata = ${JSON.stringify(metadata)}\n---\n<!doctype html><html lang="${blueprint.locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(page.title)}</title><meta name="description" content="${escapeHtml(page.description)}"><meta name="managed-site-structured-metadata" content={managedMetadata}></head><body><header><strong>${escapeHtml(blueprint.brandName)}</strong><nav aria-label="Primary">${navigation}</nav></header><main><h1>${escapeHtml(page.title)}</h1><p class="geo-summary">${escapeHtml(blueprint.seoGeo.summaryAnswer)}</p>${sections}${faq}</main><footer><p>${escapeHtml(blueprint.seoGeo.evidenceLimitations.join(' '))}</p></footer></body></html>`
     const path = page.pageKey === 'home' ? 'src/pages/index.astro' : `src/pages/${page.pageKey}.astro`
     return { path, mediaType: 'text/astro' as const, content, sha256: sha256(content) }

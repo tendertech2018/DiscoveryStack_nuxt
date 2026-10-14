@@ -91,6 +91,7 @@ onMounted(loadCustomerSite)
       </div>
       <button v-if="projection?.capabilities.customerDataExport" type="button" class="button" @click="exportData">匯出我的資料</button>
       <NuxtLink v-if="projection?.capabilities.customerDataExport" class="button button--editor" to="/customer/managed-sites/inbox">網站詢問</NuxtLink>
+      <NuxtLink v-if="projection" class="button button--editor" to="/customer/managed-sites/report">每月成效報告</NuxtLink>
       <NuxtLink v-if="projection && ['owner', 'administrator', 'editor'].includes(projection.membership.role)" class="button button--editor" to="/customer/managed-sites/editor">開啟網站編輯器</NuxtLink>
       <NuxtLink v-if="projection && ['owner', 'administrator', 'editor'].includes(projection.membership.role)" class="button button--editor" to="/customer/managed-sites/design-care">免費美術調整</NuxtLink>
       <button v-if="projection" type="button" class="button button--editor" :disabled="signingOut" @click="signOut">{{ signingOut ? '登出中…' : '登出' }}</button>

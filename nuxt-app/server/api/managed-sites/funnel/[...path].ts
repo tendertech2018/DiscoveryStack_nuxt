@@ -17,6 +17,12 @@ import { getManagedSiteLiveConnectorRepository } from '../../../managed-sites/li
 import { getPreviewRepository } from '../../../managed-sites/ordering-repository'
 import { parsePathId } from '../../../managed-sites/normalization'
 import { analysePublicHomepage } from '../../../utils/publicSiteAnalysis'
+import { prepareStudioIntake, projectStudioIntake, saveStudioMedia, saveStudioReference, studioIntakeState } from '../../../managed-sites/funnel/studio-intake'
+import { normalizeStudioMedia } from '../../../managed-sites/funnel/studio-media'
+import { analyseStudioReference } from '../../../managed-sites/funnel/studio-reference'
+import { clearlyUnrelatedStudioRequest } from '../../../../utils/managedSiteGuided'
+import { reviseStudioDesign } from '../../../managed-sites/funnel/studio-design-service'
+import { assertStudioProviderRequirement } from '../../../llm-provider/website-studio'
 
 const funnelPrefix = '/api/managed-sites/funnel'
 const privateHeaders = { 'cache-control': 'private, no-store, max-age=0', 'x-robots-tag': 'noindex, nofollow, noarchive', 'referrer-policy': 'no-referrer' }
@@ -78,16 +84,16 @@ function oversizedFunnelBody(): never {
   throw createError({ statusCode: 413, statusMessage: '申請內容超過大小限制，請縮短後再試。' })
 }
 
-async function readBoundedFunnelBody(event: H3Event): Promise<void> {
+async function readBoundedFunnelBody(event: H3Event, maxBytes = MANAGED_SITE_FUNNEL_MAX_BODY_BYTES): Promise<void> {
   const announced = String(getHeader(event, 'content-length') || '').trim()
   if (/^\d+$/u.test(announced)) {
     const length = Number(announced)
-    if (!Number.isSafeInteger(length) || length > MANAGED_SITE_FUNNEL_MAX_BODY_BYTES) oversizedFunnelBody()
+    if (!Number.isSafeInteger(length) || length > maxBytes) oversizedFunnelBody()
   }
   const cached = event._requestBody
   if (typeof cached === 'string' || Buffer.isBuffer(cached) || cached instanceof Uint8Array || cached instanceof ArrayBuffer) {
     const bytes = Buffer.isBuffer(cached) ? cached : cached instanceof ArrayBuffer ? Buffer.from(new Uint8Array(cached)) : Buffer.from(cached)
-    if (bytes.byteLength > MANAGED_SITE_FUNNEL_MAX_BODY_BYTES) oversizedFunnelBody()
+    if (bytes.byteLength > maxBytes) oversizedFunnelBody()
     return
   }
   const webBody = event.web?.request?.body
@@ -100,7 +106,7 @@ async function readBoundedFunnelBody(event: H3Event): Promise<void> {
       if (done) break
       const chunk = Buffer.from(value)
       total += chunk.byteLength
-      if (total > MANAGED_SITE_FUNNEL_MAX_BODY_BYTES) { await reader.cancel(); oversizedFunnelBody() }
+      if (total > maxBytes) { await reader.cancel(); oversizedFunnelBody() }
       chunks.push(chunk)
     }
     event._requestBody = Buffer.concat(chunks, total)
@@ -111,14 +117,14 @@ async function readBoundedFunnelBody(event: H3Event): Promise<void> {
   for await (const value of event.node.req) {
     const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value)
     total += chunk.byteLength
-    if (total > MANAGED_SITE_FUNNEL_MAX_BODY_BYTES) { event.node.req.pause(); oversizedFunnelBody() }
+    if (total > maxBytes) { event.node.req.pause(); oversizedFunnelBody() }
     chunks.push(chunk)
   }
   event._requestBody = Buffer.concat(chunks, total)
 }
 
-async function strictFunnelBody(event: H3Event, allowedFields: readonly string[]): Promise<Record<string, unknown>> {
-  await readBoundedFunnelBody(event)
+async function strictFunnelBody(event: H3Event, allowedFields: readonly string[], maxBytes = MANAGED_SITE_FUNNEL_MAX_BODY_BYTES): Promise<Record<string, unknown>> {
+  await readBoundedFunnelBody(event, maxBytes)
   const candidate = await readBody(event)
   if (containsClientAmount(candidate)) throw createError({ statusCode: 400, statusMessage: 'Client-supplied prices or amounts are not allowed.' })
   return strictManagedSiteBody(event, allowedFields)
@@ -170,6 +176,7 @@ export default defineEventHandler(async event => {
   const sessionId = parsePathId(segments[1], 'Managed-site funnel session id')
   const sessionToken = String(getHeader(event, 'x-managed-site-funnel-token') || '')
   const authenticatedSession = await loadFunnelSession(sessionId, sessionToken, repository)
+  if (method === 'POST' && ['studio-intake', 'studio-preview'].includes(segments[2] || '')) assertStudioProviderRequirement(getHeader(event, 'x-managed-site-required-provider'))
 
   if (segments.length === 2) {
     if (method === 'GET') return await sessionProjection(authenticatedSession)
@@ -275,13 +282,47 @@ export default defineEventHandler(async event => {
     return draft
   }
 
+  if (segments.length === 3 && segments[2] === 'studio-intake') {
+    if (method === 'GET') return projectStudioIntake(studioIntakeState(authenticatedSession))
+    if (method !== 'POST') throw createError({ statusCode: 405, statusMessage: 'Method not allowed.' })
+    assertSameOriginManagedSiteMutation(event); checkRateLimit(event, sessionId)
+    const body = await strictFunnelBody(event, ['message', 'answers', 'revision'])
+    if (typeof body.message === 'string' && body.message.trim() && !clearlyUnrelatedStudioRequest(body.message) && !claimPreviewDraftGeneration(sessionId)) throw createError({ statusCode: 429, statusMessage: 'Please wait before another AI request. Your brief is saved.' })
+    return prepareStudioIntake(authenticatedSession, body, repository)
+  }
+
+  if (segments.length === 3 && segments[2] === 'studio-reference') {
+    if (method !== 'POST') throw createError({ statusCode: 405, statusMessage: 'Method not allowed.' })
+    assertSameOriginManagedSiteMutation(event); checkRateLimit(event, sessionId)
+    const body = await strictFunnelBody(event, ['url', 'revision'])
+    if (authenticatedSession.status !== 'active' || authenticatedSession.projectId || authenticatedSession.previewId || body.revision !== studioIntakeState(authenticatedSession).revision) throw createError({ statusCode: 409, statusMessage: 'Reload the current brief before analysing a reference.' })
+    if (!claimSiteAnalysisRun(sessionId)) throw createError({ statusCode: 429, statusMessage: 'Please wait before analysing another reference.' })
+    return saveStudioReference(authenticatedSession, await analyseStudioReference(body.url), body.revision, repository)
+  }
+
+  if (segments.length === 3 && segments[2] === 'studio-media') {
+    if (method !== 'POST') throw createError({ statusCode: 405, statusMessage: 'Method not allowed' })
+    assertSameOriginManagedSiteMutation(event); checkRateLimit(event, sessionId)
+    const body = await strictFunnelBody(event, ['slot', 'dataUrl', 'alt', 'rightsConfirmed', 'revision', 'remove'], 240_000)
+    if (!['hero', 'detail'].includes(String(body.slot)) || (body.remove !== undefined && body.remove !== true)) throw createError({ statusCode: 422, statusMessage: 'Choose a supported image slot.' })
+    if (authenticatedSession.status !== 'active' || authenticatedSession.projectId || authenticatedSession.previewId || body.revision !== studioIntakeState(authenticatedSession).revision) throw createError({ statusCode: 409, statusMessage: 'Reload the current brief before adding an image.' })
+    return saveStudioMedia(authenticatedSession, body.remove === true ? null : await normalizeStudioMedia(body), body.slot as 'hero' | 'detail', body.revision, repository)
+  }
+
   if (segments.length === 3 && segments[2] === 'studio-preview') {
     if (method !== 'POST') throw createError({ statusCode: 405, statusMessage: 'Managed-site funnel route method is not allowed.' })
     assertSameOriginManagedSiteMutation(event); checkRateLimit(event, sessionId)
-    const input = parseStudioRequest(await strictFunnelBody(event, ['brandName', 'brief', 'siteType', 'goal', 'mode', 'revision']))
+    const input = parseStudioRequest(await strictFunnelBody(event, ['brandName', 'brief', 'siteType', 'goal', 'mode', 'revision', 'language', 'audience', 'market', 'guidedRevision']))
     // Shares the existing expensive-generation allowance; never replays another brief's draft.
     if (!claimPreviewDraftGeneration(sessionId)) throw createError({ statusCode: 429, statusMessage: '短時間內已產生多次預覽，請稍後再試；你仍可切換目前的三種版型。' })
     return generateAndStoreStudioProposal(authenticatedSession, input, repository)
+  }
+
+  if (segments.length === 3 && segments[2] === 'studio-design') {
+    if (method !== 'POST') throw createError({ statusCode: 405, statusMessage: 'Method not allowed.' })
+    assertSameOriginManagedSiteMutation(event); checkRateLimit(event, sessionId)
+    const body = await strictFunnelBody(event, ['proposalId', 'design'])
+    return reviseStudioDesign(authenticatedSession, { proposalId: body.proposalId, design: body.design }, repository)
   }
 
   if (segments.length === 3 && segments[2] === 'studio-draft') {

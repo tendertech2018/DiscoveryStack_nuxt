@@ -192,5 +192,5 @@ export const MANAGED_SITE_ROLE_PERMISSIONS: Record<ManagedSiteRole, readonly str
 }
 
 export function roleAllows(role: ManagedSiteRole, permission: string): boolean {
-  return MANAGED_SITE_ROLE_PERMISSIONS[role].includes(permission)
+  return Object.prototype.hasOwnProperty.call(MANAGED_SITE_ROLE_PERMISSIONS, role) && MANAGED_SITE_ROLE_PERMISSIONS[role].includes(permission)
 }

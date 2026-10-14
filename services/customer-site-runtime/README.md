@@ -19,9 +19,15 @@
 
 將 `.env.example` 設定透過平台安全注入；伺服器不自動讀取 .env。必須設定 HTTPS `SITE_ORIGIN`、獨立資料庫／uploads 的持久磁碟、至少 14 字管理密碼與至少 32 字隨機 session secret。Docker 容器的 `/data` 要先由平台建立並給 node 使用者寫入權；禁止使用 ephemeral disk。單個資料庫只能由一個網站身份及 mode 開啟；preview 資料庫不能改標為 production。
 
-正式預設付款 `disabled`。經商家確認後可選 `manual` 並填寫付款指示；它不會扣款，也不保證款項已入帳。`sandbox` 不可用在 production。Stripe／綠界／藍新實際扣款與對帳 adapter、物流與電子發票尚未接入；不能把人工確認當成供應商成功證據。
+正式預設付款 `disabled`。經商家確認後可選 `manual` 並填寫付款指示；它不會扣款，也不保證款項已入帳。`sandbox`、`stripe_test` 不可用在 production；`stripe_live` 不可用在 preview。
 
-Resend 必須先有經驗證的寄件網域、有效 API key 與 `RESEND_FROM`，再把 `SITE_NOTIFICATIONS_ENABLED` 設 true。客戶資料、寄件身份与 DS 自己的金流必須分開。現在 outbox 含訂單建立、會員 Email 驗證與忘記密碼通知。驗證／重設連結為 30 分鐘單次 token；內容在伺服器 outbox 以 session secret 衍生的 AES-GCM key 加密，寄送完成清除正文。輪換 secret 前需處理舊佇列，不能將正式 secret 換成臨時值。預約提醒尚未提供，不應宣稱已完成。
+Stripe Checkout adapter 已實作、僅完成 mocked provider 驗證，尚未做真實 Stripe 驗收。`stripe_test` 必須安全注入客戶商家的 `SITE_STRIPE_SECRET_KEY=sk_test_…` 與此網站 webhook 的 `SITE_STRIPE_WEBHOOK_SECRET=whsec_…`；不能沿用 DS 訂閱金流金鑰。在 Stripe 測試環境設定 HTTPS `/api/payments/stripe/webhook`，訂閱 `checkout.session.completed`、`checkout.session.async_payment_succeeded`、`checkout.session.expired`、`charge.refunded`。只接受原始位元組簽章、五分鐘時間窗口、相同網站／訂單／金額／幣別／模式。簽章正確的其他事件會忽略，不會改訂單。相同事件不重複出貨或回補庫存。
+
+結帳由伺服器商品與運費重新計價，保留庫存至少 40 分鐘；外部回傳只接受 Stripe Checkout 網址。瀏覽器返回成功網址不是付款證據，訂單必須等簽署通知。逾期釋出庫存後才到帳的款項標為待對帳並阻擋出貨。退款由商家在 Stripe 操作，這版沒有自動扣款／退款 API；全額退款以通知驗證後入帳，部分退款轉人工對帳。商家後台不能把 Stripe 訂單手動標成已付款或已退款。真實收款未經另外核准與端到端驗收，不可啟用。綠界／藍新、物流商 API 與電子發票仍未接入。
+
+訪客預約送出後提供私人管理連結（256-bit token 放在 fragment，不放 query）。資料庫只存雜湊，不用 Email 或預約 ID 代替驗證；可查詢、取消、在截止時間前改期。改期要商家重新確認，不能藉反覆改期延長保留時間；取消不代表自動退款。重複提交保留舊連結效力。會員使用原點數帳本與會員權限，兩者不混用。
+
+Resend 必須先有經驗證的寄件網域、有效 API key 與 `RESEND_FROM`，再把 `SITE_NOTIFICATIONS_ENABLED` 設 true。客戶資料、寄件身份与 DS 自己的金流必須分開。現在 outbox 含訂單建立、會員 Email 驗證、忘記密碼與訪客預約狀態異動通知。寄信未設定時，預約畫面明確要求保留私人查詢連結，不假裝已寄信。驗證／重設連結為 30 分鐘單次 token；內容在伺服器 outbox 以 session secret 衍生的 AES-GCM key 加密，寄送完成清除正文。輪換 secret 前需處理舊佇列，不能將正式 secret 換成臨時值。定時課前提醒尚未提供，不應宣稱已完成。
 
 反向代理必須保留原始 Host，並使用配置的完整 canonical origin；本版本不信任任何 forwarded IP header。代理後的防濫用可在入口按真實 IP 做限制；應用內 remoteAddress 限流可能對同個 proxy 共用額度。勿直接公開 HTTP、管理預览或啟用真實付款。
 

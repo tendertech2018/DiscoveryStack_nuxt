@@ -4,6 +4,9 @@ import { renderManagedSiteContactForm } from '../blueprint'
 import { normalizePublicHttpsOrigin } from '../../../content-operations/normalization'
 import { MANAGED_SITE_METADATA_VERSION, renderManagedSiteMetadataHead } from '../../seo-metadata'
 import type { CustomerSitePreset } from '../../site-spec'
+import { renderStudioPage, STUDIO_CSS, STUDIO_RENDERER_VERSION } from './studio-renderer'
+import { htmlSiteLanguage, siteTextDirection } from '../../../../utils/managedSiteLanguage'
+import { PUBLIC_KNOWLEDGE_VERSION, renderManagedSitePublicKnowledge } from '../../public-knowledge'
 
 const TEMPLATE_VERSION = 'managed-site-static-renderer-v3'
 const STATIC_PRESETS = ['atelier', 'bloom', 'alignment'] as const satisfies readonly CustomerSitePreset[]
@@ -84,7 +87,7 @@ h3{font-size:clamp(1.2rem,1.6vw,1.55rem);line-height:1.25}
 @media(max-width:54rem){.site-shell{width:min(100% - 2rem,46rem)}.site-header{align-items:flex-start;flex-direction:column;gap:1rem;padding-block:1.25rem}.site-nav{justify-content:flex-start;gap:.75rem 1.1rem}.hero,.site-preset--atelier .hero,.site-preset--alignment .hero{grid-template-columns:1fr;min-height:auto;padding:clamp(2rem,8vw,4rem)}.hero-art,.site-preset--alignment .hero-art{width:min(100%,30rem);justify-self:start;aspect-ratio:16/10}.content-grid,.site-preset--bloom .content-grid,.site-preset--alignment .content-grid{grid-template-columns:1fr}.content-card,.content-card:nth-child(3n+1),.site-preset--bloom .content-card,.site-preset--alignment .content-card,.site-preset--alignment .content-card:first-child{grid-column:span 1}.site-preset--atelier .content-card:nth-child(even){transform:none}.faq-list{grid-template-columns:1fr}}
 @media(max-width:36rem){.site-shell{width:min(100% - 1.25rem,32rem)}.site-main{padding-top:1rem}.hero,.site-preset--bloom .hero{padding:2rem 1.35rem;border-radius:calc(var(--radius) * .8)}h1{font-size:clamp(2.65rem,14vw,4.4rem)}.content-grid{padding-top:1.25rem}.content-card{padding:1.6rem 1.25rem}.contact-form{grid-template-columns:1fr}.contact-form label,.contact-form label:has(textarea),.contact-form label:has(input[name="contactConsent"]),.contact-form button{grid-column:1}.site-footer{grid-template-columns:1fr;gap:.75rem}}
 `
-export const STATIC_RENDERER_FINGERPRINT = `${TEMPLATE_VERSION}:${stableFingerprint({ style: STYLE, presets: STATIC_PRESETS, structure: 'shell-header-hero-card-grid-faq-footer-v3', metadata: MANAGED_SITE_METADATA_VERSION })}`
+export const STATIC_RENDERER_FINGERPRINT = `${TEMPLATE_VERSION}:${stableFingerprint({ style: STYLE, presets: STATIC_PRESETS, structure: 'shell-header-hero-card-grid-faq-footer-v3', metadata: MANAGED_SITE_METADATA_VERSION, guided: STUDIO_RENDERER_VERSION, guidedStyle: STUDIO_CSS, knowledge: PUBLIC_KNOWLEDGE_VERSION })}`
 
 export type ManagedSiteStaticAsset = { path: string; contentType: string; content: string }
 const PUBLIC_FILES = new Map([['public/robots.txt', 'text/plain; charset=utf-8'], ['public/llms.txt', 'text/plain; charset=utf-8'], ['public/sitemap.xml', 'application/xml; charset=utf-8'], ['public/manifest.json', 'application/manifest+json; charset=utf-8']])
@@ -112,6 +115,7 @@ function resolveStaticPreset(preset?: CustomerSitePreset): CustomerSitePreset {
 }
 
 function renderPage(blueprint: ManagedSiteBlueprintV1, page: ManagedSiteBlueprintV1['pages'][number], preset: CustomerSitePreset, canonicalOrigin?: string): string {
+  if (blueprint.studioPresentation) return renderStudioPage(blueprint, page, preset, canonicalOrigin)
   const pageLabel = blueprint.navigation.find(item => item.route === page.route)?.label || page.pageKey
   const navigation = blueprint.navigation.map(item => `<a href="${safeHref(item.route)}"${item.route === page.route ? ' aria-current="page"' : ''}>${escapeHtml(item.label)}</a>`).join('')
   const sections = page.sections.map((section, index) => {
@@ -122,19 +126,26 @@ function renderPage(blueprint: ManagedSiteBlueprintV1, page: ManagedSiteBlueprin
   }).join('')
   const faq = page.pageKey === 'faq' || page.sections.some(section => section.kind === 'faq') ? `<section class="content-card faq-panel"><p class="section-index">${blueprint.locale === 'zh-hant' ? '常見問題' : 'Questions &amp; answers'}</p><h2>FAQ</h2><div class="faq-list">${blueprint.faq.map(item => `<article class="faq-item"><h3>${escapeHtml(item.question)}</h3><p>${escapeHtml(item.answer)}</p></article>`).join('')}</div></section>` : ''
   const metadata = canonicalOrigin ? renderManagedSiteMetadataHead({ blueprint, canonicalOrigin, canonicalPath: page.route, title: page.title, locale: blueprint.locale, faq: faq ? blueprint.faq : [] }) : ''
-  return `<!doctype html><html lang="${blueprint.locale === 'zh-hant' ? 'zh-Hant' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(page.title)} — ${escapeHtml(blueprint.brandName)}</title><meta name="description" content="${escapeHtml(page.description)}">${metadata}<style>${STYLE}</style></head><body class="site-preset--${preset}" data-site-preset="${preset}"><header class="site-header site-shell"><a class="brand" href="/">${escapeHtml(blueprint.brandName)}</a><nav class="site-nav" aria-label="Primary">${navigation}</nav></header><main class="site-main site-shell"><section class="hero" aria-labelledby="page-title"><div class="hero-copy"><p class="eyebrow">${escapeHtml(blueprint.brandName)} · ${escapeHtml(pageLabel)}</p><h1 id="page-title">${escapeHtml(page.title)}</h1><p class="hero-lede">${escapeHtml(page.description)}</p></div><div class="hero-art" aria-hidden="true"><span></span><span></span><span></span></div></section><div class="content-grid">${sections}${faq}</div></main><footer class="site-footer site-shell"><strong>${escapeHtml(blueprint.brandName)}</strong><p>${escapeHtml(blueprint.seoGeo.evidenceLimitations.join(' · '))}</p></footer></body></html>`
+  return `<!doctype html><html lang="${htmlSiteLanguage(blueprint.locale)}" dir="${siteTextDirection(blueprint.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(page.title)} — ${escapeHtml(blueprint.brandName)}</title><meta name="description" content="${escapeHtml(page.description)}">${metadata}<style>${STYLE}</style></head><body class="site-preset--${preset}" data-site-preset="${preset}"><header class="site-header site-shell"><a class="brand" href="/">${escapeHtml(blueprint.brandName)}</a><nav class="site-nav" aria-label="Primary">${navigation}</nav></header><main class="site-main site-shell"><section class="hero" aria-labelledby="page-title"><div class="hero-copy"><p class="eyebrow">${escapeHtml(blueprint.brandName)} · ${escapeHtml(pageLabel)}</p><h1 id="page-title">${escapeHtml(page.title)}</h1><p class="hero-lede">${escapeHtml(page.description)}</p></div><div class="hero-art" aria-hidden="true"><span></span><span></span><span></span></div></section><div class="content-grid">${sections}${faq}</div></main><footer class="site-footer site-shell"><strong>${escapeHtml(blueprint.brandName)}</strong><p>${escapeHtml(blueprint.seoGeo.evidenceLimitations.join(' · '))}</p></footer></body></html>`
 }
 
 export function renderManagedSiteStaticAssets(blueprint: ManagedSiteBlueprintV1, files: readonly ManagedSiteGeneratedFile[] = [], canonicalOrigin?: string, customerSitePreset?: CustomerSitePreset): ManagedSiteStaticAsset[] {
   const origin = canonicalOrigin === undefined ? undefined : normalizePublicHttpsOrigin(canonicalOrigin)
   const preset = resolveStaticPreset(customerSitePreset ?? blueprint.customerSitePreset)
   const assets = blueprint.pages.map(page => ({ path: outputPath(page.route), contentType: 'text/html; charset=utf-8', content: renderPage(blueprint, page, preset, origin) }))
-  if (blueprint.selectedModulePlacements.some(item => item.moduleKey === 'contact_lead_capture')) assets.push({ path: 'thanks/index.html', contentType: 'text/html; charset=utf-8', content: `<!doctype html><html lang="${blueprint.locale === 'zh-hant' ? 'zh-Hant' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex, nofollow, noarchive"><title>謝謝你的訊息</title><style>${STYLE}</style></head><body class="site-preset--${preset}" data-site-preset="${preset}"><main class="site-main site-shell"><section class="hero hero--compact"><div class="hero-copy"><p class="eyebrow">${escapeHtml(blueprint.brandName)}</p><h1>謝謝你的訊息</h1><p class="hero-lede">我們已收到你的訊息，會儘快與你聯絡。</p></div></section></main></body></html>` })
+  if (blueprint.selectedModulePlacements.some(item => item.moduleKey === 'contact_lead_capture')) {
+    const title = blueprint.studioPresentation?.chrome.thanksTitle || '謝謝你的訊息', body = blueprint.studioPresentation?.chrome.thanksBody || '我們已收到你的訊息，會儘快與你聯絡。'
+    const content = blueprint.studioPresentation?.renderer === 'brand-studio-v2'
+      ? renderStudioPage(blueprint, { pageKey: 'contact', route: '/thanks', title, description: body, sections: [] }, preset).replace('content="noindex,nofollow"', 'content="noindex, nofollow, noarchive"')
+      : `<!doctype html><html lang="${htmlSiteLanguage(blueprint.locale)}" dir="${siteTextDirection(blueprint.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex, nofollow, noarchive"><title>${escapeHtml(title)}</title><style>${STYLE}</style></head><body class="site-preset--${preset}" data-site-preset="${preset}"><main class="site-main site-shell"><section class="hero hero--compact"><div class="hero-copy"><p class="eyebrow">${escapeHtml(blueprint.brandName)}</p><h1>${escapeHtml(title)}</h1><p class="hero-lede">${escapeHtml(body)}</p></div></section></main></body></html>`
+    assets.push({ path: 'thanks/index.html', contentType: 'text/html; charset=utf-8', content })
+  }
   for (const file of files) {
     const contentType = PUBLIC_FILES.get(file.path)
-    if (contentType && !(origin && ['public/robots.txt', 'public/sitemap.xml'].includes(file.path))) assets.push({ path: file.path.slice('public/'.length), contentType, content: file.content })
+    if (contentType && !(origin && ['public/robots.txt', 'public/sitemap.xml', 'public/llms.txt'].includes(file.path))) assets.push({ path: file.path.slice('public/'.length), contentType, content: file.content })
   }
   if (origin) {
+    assets.push(...renderManagedSitePublicKnowledge(blueprint, origin, assets))
     assets.push({ path: 'robots.txt', contentType: 'text/plain; charset=utf-8', content: `User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n` })
     assets.push({ path: 'sitemap.xml', contentType: 'application/xml; charset=utf-8', content: `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${blueprint.pages.map(page => `<url><loc>${escapeHtml(`${origin}${page.route}`)}</loc></url>`).join('')}</urlset>` })
   }

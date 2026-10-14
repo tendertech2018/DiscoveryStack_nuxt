@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { canonicalFingerprint } from './canonical'
 import type { CompiledPageArtifact } from './types'
+import { normalizeSiteLanguage } from '../../../utils/managedSiteLanguage'
 
 export const MANAGED_PAGE_TRANSPORT_VERSION = 'managed-site-page-transport-v1' as const
 
@@ -81,7 +82,7 @@ function validateCompiledArtifact(value: unknown): CompiledPageArtifact | null {
   if (typeof value.pageId !== 'string' || value.pageId.length < 1 || value.pageId.length > 128) return null
   if (!Number.isSafeInteger(value.pageVersion) || Number(value.pageVersion) < 1) return null
   if (typeof value.route !== 'string' || value.route.length > 512 || !ROUTE.test(value.route) || value.route.includes('//')) return null
-  if (value.locale !== 'zh-hant' && value.locale !== 'en') return null
+  if (!normalizeSiteLanguage(value.locale)) return null
   if (typeof value.contentType !== 'string' || !CONTENT_TYPES.has(value.contentType)) return null
   if (!Array.isArray(value.blocks) || value.blocks.length > 200 || !value.blocks.every(isRecord)) return null
   if (!isRecord(value.design) || !isRecord(value.seo) || value.seo.canonicalPath !== value.route) return null

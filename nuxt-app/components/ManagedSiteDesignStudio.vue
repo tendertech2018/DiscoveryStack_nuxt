@@ -1,5 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import type { StudioIntakeReply } from '../utils/managedSiteGuided'
+import { journeyText } from '../utils/managedSiteJourneyCopy'
+import { siteTextDirection } from '../utils/managedSiteLanguage'
+import type { StudioDesign } from '../utils/managedSitePresentation'
 import {
   STUDIO_DIRECTIONS,
   studioBriefKey,
@@ -16,6 +20,11 @@ const props = defineProps<{
   draft?: StudioSelection | null
   confirmed?: { proposalId: string; preset: StudioPreset } | null
   requestPreview: (input: StudioPreviewRequest) => Promise<StudioPreview>
+  requestIntake?: (method: 'GET' | 'POST', body?: Record<string, unknown>) => Promise<StudioIntakeReply>
+  analyseReference?: (url: string, revision: number) => Promise<StudioIntakeReply>
+  saveMedia?: (body: Record<string, unknown>) => Promise<StudioIntakeReply>
+  interfaceLanguage?: string
+  requestDesign?: (proposalId: string, design: Partial<StudioDesign>) => Promise<StudioPreview>
   saving?: boolean
   saveError?: string
 }>()
@@ -42,6 +51,18 @@ const renderedBrief = ref<StudioBrief | null>(
   restored ? { ...restored.brief } : null
 )
 const selectedPreset = ref<StudioPreset>(restored?.preset || 'atelier')
+const showGuided = ref(!restored)
+const intakeBusy = ref(false)
+const editAllPages = ref(false)
+const customAccent = ref(''), customCanvas = ref('')
+const conversationLanguage = computed(() => props.interfaceLanguage || brief.value.language || 'zh-Hant')
+const zh = computed(() => conversationLanguage.value.startsWith('zh'))
+const t = (chinese: string, english: string) => zh.value ? chinese : english
+function acceptGuidedBrief(next: StudioBrief) { brief.value = { ...next } }
+function guidanceMessage(cause: any): string | null {
+  const data = cause?.data?.data || cause?.data
+  return data?.code === 'STUDIO_GUIDANCE' && typeof data.message === 'string' ? data.message.slice(0, 1600) : null
+}
 const mobile = ref(false)
 const busy = ref(false)
 const error = ref('')
@@ -81,6 +102,11 @@ const visibleResult = computed(() =>
     ? pending.value.preview
     : result.value
 )
+const designDirections = computed(() => !visibleResult.value?.design ? STUDIO_DIRECTIONS : [
+  { key: 'atelier' as const, label: t('品牌主提案', 'Brand direction'), note: t('依需求與參考風格安排', 'Your brief and reference style') },
+  { key: 'bloom' as const, label: t('大圖敘事', 'Visual showcase'), note: t('寬幅圖片與交錯內容', 'Wide imagery and editorial sections') },
+  { key: 'alignment' as const, label: t('清楚俐落', 'Structured clarity'), note: t('置中主視覺與資訊卡片', 'Centred hero and content cards') },
+])
 const showingConfirmed = computed(() => Boolean(
   props.confirmed &&
   result.value?.proposalId === props.confirmed.proposalId &&
@@ -111,6 +137,8 @@ const canContinue = computed(() =>
       !busy.value &&
       !props.saving &&
       !pending.value
+      && !intakeBusy.value && (!props.requestIntake || !showGuided.value)
+      && (!props.requestIntake || result.value?.source === 'llm')
   )
 )
 const canApply = computed(() =>
@@ -161,12 +189,12 @@ function useExample(example: (typeof examples)[number]) {
 }
 
 async function generate(mode: 'template' | 'ai' = 'template') {
-  if (busy.value || props.saving || pending.value) return
+  if (busy.value || intakeBusy.value || props.saving || pending.value) return
   error.value = ''
   notice.value = ''
   if (revision.value.trim()) {
     error.value =
-      '下方有尚未處理的修改要求，請先看修改建議，或清除要求後重新產生。'
+      t('下方有尚未處理的修改要求，請先看修改建議，或清除要求後重新產生。', 'Review or clear your pending edit request before generating another proposal.')
     return
   }
   const description = brief.value.brief.trim()
@@ -176,7 +204,7 @@ async function generate(mode: 'template' | 'ai' = 'template') {
     brief.value.brandName.trim().length > 160 ||
     description.length > 1800
   ) {
-    error.value = '請填寫品牌名稱與需求；品牌最多 160 字，需求最多 1,800 字。'
+    error.value = t('請填寫品牌名稱與需求；品牌最多 160 字，需求最多 1,800 字。', 'Enter your brand name and brief, within 160 and 1,800 characters respectively.')
     return
   }
   const snapshot = {
@@ -188,8 +216,8 @@ async function generate(mode: 'template' | 'ai' = 'template') {
   busy.value = true
   busyPurpose.value =
     mode === 'ai'
-      ? 'AI 正在規劃網站與撰寫各頁文案，可能需要一點時間…'
-      : '正在準備版型與頁面預覽…'
+      ? t('AI 正在規劃網站與撰寫各頁文案，可能需要一點時間…', 'AI is planning your website and writing each page. This may take a moment…')
+      : t('正在準備版型與頁面預覽…', 'Preparing your layout previews…')
   try {
     const next = await props.requestPreview({ ...snapshot, mode })
     if (sequence !== requestSequence) return
@@ -198,6 +226,7 @@ async function generate(mode: 'template' | 'ai' = 'template') {
     if (!result.value && next.strategy?.source === 'llm')
       selectedPreset.value = next.strategy.recommendedPreset
     result.value = next
+    showGuided.value = false
     brief.value = { ...snapshot }
     renderedBrief.value = { ...snapshot }
     revision.value = ''
@@ -206,11 +235,11 @@ async function generate(mode: 'template' | 'ai' = 'template') {
     focusResult()
   } catch (cause: any) {
     if (sequence !== requestSequence) return
-    error.value =
+    error.value = guidanceMessage(cause) || (
       Number(cause?.statusCode || cause?.status || cause?.response?.status) ===
       429
-        ? '這幾分鐘已產生多次預覽，請稍後再試。現有版型仍可切換。'
-        : '這次未能產生預覽，原本的版本與輸入都還在。請稍後再試。'
+        ? t('這幾分鐘已產生多次預覽，請稍後再試。現有版型仍可切換。', 'Please wait before another AI request. Your existing layouts are still available.')
+        : t('這次未能產生預覽，原本的版本與輸入都還在。請稍後再試。', 'The request did not complete. Your existing version and input are preserved. Please retry.'))
   } finally {
     if (sequence === requestSequence) busy.value = false
   }
@@ -237,6 +266,21 @@ function validatePreview(next: StudioPreview) {
     throw new Error('incomplete preview')
 }
 
+async function refineDesign(design: Partial<StudioDesign>) {
+  if (busy.value || intakeBusy.value || props.saving || pending.value || dirty.value || !result.value?.proposalId || !props.requestDesign) return
+  const sequence = ++requestSequence
+  busy.value = true; error.value = ''; busyPurpose.value = t('正在更新外觀，不使用 AI 額度…', 'Updating the design without AI credits…')
+  try {
+    const updated = await props.requestDesign(result.value.proposalId, design)
+    if (sequence !== requestSequence) return
+    validatePreview(updated)
+    // A colour/font/motion edit must keep the customer's selected layout as well as their copy.
+    rememberCurrent(); result.value = updated; customAccent.value = ''; customCanvas.value = ''
+    notice.value = t('外觀已更新；文字、圖片與其他內容沒有改動。可復原，確認前不會發布。', 'Design updated. Copy and images are unchanged. You can undo; nothing is published.')
+  } catch { if (sequence === requestSequence) error.value = t('外觀未更新，原版本仍保留。請稍後再試。', 'The visual change was not saved. Your previous version is preserved.') }
+  finally { if (sequence === requestSequence) busy.value = false }
+}
+
 function rememberCurrent() {
   if (result.value && renderedBrief.value)
     history.value = [
@@ -257,31 +301,31 @@ async function suggestRevision(instruction: string) {
 }
 
 async function proposeRevision() {
-  if (busy.value || props.saving || pending.value) return
+  if (busy.value || intakeBusy.value || props.saving || pending.value) return
   error.value = ''
   notice.value = ''
   if (briefChanged.value) {
-    error.value = '品牌需求已改變，請先清除修改要求並重新產生，再修改文案。'
+    error.value = t('品牌需求已改變，請先清除修改要求並重新產生，再修改文案。', 'Your brief changed. Clear this edit and generate the updated proposal first.')
     return
   }
   if (!result.value?.editContext || !renderedBrief.value) {
-    error.value = '請先產生新版網站提案，再使用一句話修改。'
+    error.value = t('請先產生新版網站提案，再使用一句話修改。', 'Generate a website proposal before requesting an edit.')
     return
   }
   const instruction = revision.value.trim()
   if (!instruction || instruction.length > 600) {
-    error.value = '請用 600 字以內，告訴我想修改哪裡。'
+    error.value = t('請用 600 字以內，告訴我想修改哪裡。', 'Describe your change in 600 characters or fewer.')
     return
   }
   const snapshot = { ...renderedBrief.value }
   const sequence = ++requestSequence
   busy.value = true
-  busyPurpose.value = 'AI 正在準備修改提案；目前的草稿不會被覆蓋…'
+  busyPurpose.value = t('AI 正在準備修改提案；目前的草稿不會被覆蓋…', 'Preparing the proposed edit. Your current draft will not be overwritten…')
   try {
     const next = await props.requestPreview({
       ...snapshot,
       mode: 'ai',
-      revision: { instruction, base: result.value.editContext, ...(result.value.proposalId ? { proposalId: result.value.proposalId } : {}) },
+      revision: { instruction, base: result.value.editContext, ...(result.value.proposalId ? { proposalId: result.value.proposalId } : {}), ...(props.requestIntake && !editAllPages.value ? { pageKey: currentPage.value } : {}) },
     })
     if (sequence !== requestSequence) return
     validatePreview(next)
@@ -293,7 +337,7 @@ async function proposeRevision() {
       throw new Error('unavailable edit')
     if (!next.changes.length) {
       notice.value =
-        '這次沒有產生文字差異，原稿保持不變。可以換個更具體的說法。'
+        t('這次沒有產生文字差異，原稿保持不變。可以換個更具體的說法。', 'No text changed. Your draft is unchanged; try a more specific request.')
       return
     }
     pending.value = {
@@ -306,11 +350,11 @@ async function proposeRevision() {
     focusResult()
   } catch (cause: any) {
     if (sequence !== requestSequence) return
-    error.value =
+    error.value = guidanceMessage(cause) || (
       Number(cause?.statusCode || cause?.status || cause?.response?.status) ===
       429
-        ? '這幾分鐘已產生多次預覽，請稍後再試。原稿與修改要求都保留著。'
-        : 'AI 這次未能完成修改，原稿與修改要求都保留著。請稍後再試。'
+        ? t('這幾分鐘已產生多次預覽，請稍後再試。原稿與修改要求都保留著。', 'Please wait before another AI request. Your draft and edit instruction are preserved.')
+        : t('AI 這次未能完成修改，原稿與修改要求都保留著。請稍後再試。', 'AI could not complete this edit. Your draft and instruction are preserved. Please retry.'))
   } finally {
     if (sequence === requestSequence) busy.value = false
   }
@@ -339,20 +383,21 @@ function applyRevision() {
   pending.value = null
   revision.value = ''
   error.value = ''
-  notice.value = '修改已套用到這份草稿，沒有發布。也可以隨時回到上一版。'
+  notice.value = t('修改已套用到這份草稿，沒有發布。也可以隨時回到上一版。', 'Changes applied to this draft, not published. You can return to the previous version.')
   void nextTick().then(focusResult)
 }
 
 function discardRevision() {
   if (busy.value || props.saving) return
   pending.value = null
-  notice.value = '保留原稿；修改要求仍在，可以換個說法再試。'
+  notice.value = t('保留原稿；修改要求仍在，可以換個說法再試。', 'Original draft kept. Your edit instruction is still available to refine.')
 }
 
 function undo() {
   if (busy.value || props.saving || pending.value) return
   const previous = history.value.at(-1)
   if (!previous) return
+  customAccent.value = ''; customCanvas.value = ''
   history.value = history.value.slice(0, -1)
   brief.value = { ...previous.brief }
   renderedBrief.value = { ...previous.brief }
@@ -361,7 +406,7 @@ function undo() {
   revision.value = ''
   error.value = ''
   currentPage.value = 'home'
-  notice.value = '已回到上一版草稿。'
+  notice.value = t('已回到上一版草稿。', 'Returned to the previous draft.')
 }
 
 function continueWithDesign() {
@@ -374,7 +419,7 @@ function continueWithDesign() {
 }
 
 function openDetailed() {
-  if (busy.value || props.saving || pending.value) return
+  if (busy.value || intakeBusy.value || props.saving || pending.value) return
   const cached =
     result.value && renderedBrief.value
       ? {
@@ -391,18 +436,26 @@ function openDetailed() {
   <section
     class="design-studio"
     aria-labelledby="design-studio-title"
-    :aria-busy="busy || saving"
+    :aria-busy="busy || intakeBusy || saving"
+    :lang="conversationLanguage"
+    :dir="siteTextDirection(conversationLanguage)"
   >
+    <ol class="studio-flow"><li :aria-current="showGuided ? 'step' : undefined">01 {{ journeyText(conversationLanguage, 'idea') }}</li><li :aria-current="!showGuided ? 'step' : undefined">02 {{ journeyText(conversationLanguage, 'review') }}</li><li>03 {{ journeyText(conversationLanguage, 'launch') }}</li></ol>
     <div class="design-studio__intro">
       <p class="studio-kicker">YOUR IDEA. A WEBSITE WITH A PLAN.</p>
-      <h2 id="design-studio-title">你說想法，<em>網站先替你想一步。</em></h2>
+      <h2 id="design-studio-title">{{ t('你說想法，', 'Your idea,') }}<em>{{ t('網站先替你想一步。', 'thoughtfully made.') }}</em></h2>
       <p>
-        不只選版型。從品牌主張、訪客動線到每頁文案，先看提案，再用一句話調整。
+        {{ t('不只選版型。從品牌主張、訪客動線到每頁文案，先看提案，再用一句話調整。', 'From brand story to visitor journey and every page. See the proposal, then refine it in your own words.') }}
       </p>
     </div>
     <div class="design-studio__layout">
-      <form class="studio-brief" @submit.prevent="generate('ai')">
-        <fieldset :disabled="busy || saving || Boolean(pending)">
+      <form class="studio-brief" @submit.prevent="!requestIntake && generate('ai')">
+        <StudioGuidedIntake v-if="requestIntake && analyseReference && showGuided" :request="requestIntake" :analyse-reference="analyseReference" :save-media="saveMedia" :disabled="busy || saving || Boolean(pending)" @ready="acceptGuidedBrief" @generate="generate" @state="intakeBusy = $event.busy" />
+        <div v-else-if="requestIntake" class="studio-help">
+          <p>{{ brief.brandName }} · {{ brief.language }}</p><p>{{ brief.audience }}</p>
+          <button type="button" :disabled="busy || saving || Boolean(pending)" @click="showGuided = true">{{ t('調整需求、語言或參考風格', 'Refine brief, language or reference style') }} ↗</button>
+        </div>
+        <fieldset v-if="!requestIntake" :disabled="busy || saving || Boolean(pending)">
           <legend>01 / 說說你的生意</legend>
           <div
             v-if="!brief.brandName.trim() && !brief.brief.trim()"
@@ -484,13 +537,13 @@ function openDetailed() {
         <p v-if="notice" class="studio-notice" role="status">{{ notice }}</p>
         <div v-if="result" class="studio-conversation">
           <p class="studio-kicker">LET’S MAKE IT YOURS</p>
-          <h3>哪裡還不像你？直接說。</h3>
+          <h3>{{ t('哪裡還不像你？直接說。', 'What would make it feel more like you?') }}</h3>
           <div class="studio-suggestions" aria-label="修改靈感">
             <button
               v-for="suggestion in [
-                '首頁文字再精簡一點',
-                '改成親切自然的語氣',
-                '說清楚下一步怎麼詢問',
+                t('目前這頁文字再精簡一點', 'Make this page more concise'),
+                t('改成親切自然的語氣', 'Use a warmer, more natural tone'),
+                t('說清楚下一步怎麼詢問', 'Make the next step clearer'),
               ]"
               :key="suggestion"
               type="button"
@@ -501,16 +554,17 @@ function openDetailed() {
             </button>
           </div>
           <label for="studio-revision"
-            >一句話修改<textarea
+            >{{ t('一句話修改', 'Refine in your own words') }}<textarea
               id="studio-revision"
               ref="revisionInput"
               v-model="revision"
               :disabled="busy || saving || Boolean(pending)"
               maxlength="600"
               rows="3"
-              placeholder="例如：客人大多是第一次接觸瑜伽，首頁請先安撫他們的顧慮，其他頁面保留。"
+              :placeholder="t('例如：客人大多是第一次接觸瑜伽，首頁請先安撫他們的顧慮，其他頁面保留。', 'For example: Our customers are new to yoga. Address their concerns on this page; keep the other pages unchanged.')"
             ></textarea>
           </label>
+          <label v-if="requestIntake" class="studio-help"><input v-model="editAllPages" type="checkbox" :disabled="busy || saving || Boolean(pending)"> {{ t('允許修改所有頁面（預設只改目前預覽頁）', 'Allow changes to all pages (default: current page only)') }}</label>
           <div class="studio-edit-actions">
             <button
               type="button"
@@ -524,30 +578,30 @@ function openDetailed() {
               "
               @click="proposeRevision"
             >
-              先看 AI 修改建議 →</button
+              {{ t('先看 AI 修改建議', 'Preview AI changes') }} →</button
             ><button
               type="button"
               class="studio-text"
               :disabled="busy || saving || Boolean(pending) || !revision"
               @click="revision = ''"
             >
-              清除
+              {{ t('清除', 'Clear') }}
             </button>
           </div>
           <p class="studio-help">
-            AI 會用目前草稿準備新版本；你確認後才套用，不會自動發布。
+            {{ t('AI 會用目前草稿準備新版本；你確認後才套用，不會自動發布。', 'AI prepares a proposed revision. You decide whether to apply it; nothing is published automatically.') }}
           </p>
         </div>
         <p class="studio-help">
-          完成的完整提案會保存在本次申請中；重新整理可找回，不必重新呼叫 AI。
+          {{ t('完成的完整提案會保存在本次申請中；重新整理可找回，不必重新呼叫 AI。', 'Your completed proposal is saved with this application. Reload it without another AI call.') }}
         </p>
         <button
           type="button"
           class="studio-text"
-          :disabled="busy || saving || Boolean(pending)"
+          :disabled="busy || intakeBusy || saving || Boolean(pending)"
           @click="openDetailed"
         >
-          我有既有網站，或想逐步填寫 →
+          {{ t('我有既有網站，或想逐步填寫', 'I have an existing site, or prefer the step-by-step form') }} →
         </button>
       </form>
 
@@ -563,16 +617,16 @@ function openDetailed() {
               <span>YOUR BRAND</span><b>A new<br />beginning.</b><i></i>
             </div>
           </div>
-          <h3>不只「長得好看」，還要知道下一步。</h3>
+          <h3>{{ t('不只「長得好看」，還要知道下一步。', 'A beautiful website with a clear next step.') }}</h3>
           <p>
-            你說明生意，AI 提出網站企劃與文案。<br />缺少資料先問你；AI 內容仍需要你確認。
+            {{ t('你說明生意，AI 提出網站企劃與文案。', 'Tell us about your business. AI proposes the structure and copy.') }}<br />{{ t('缺少資料先問你；AI 內容仍需要你確認。', 'Missing details are asked first. You review and approve the content.') }}
           </p>
           <div class="studio-empty-steps">
-            <span><b>01</b> 看懂你的品牌</span
-            ><span><b>02</b> 安排訪客動線</span
-            ><span><b>03</b> 一句話再調整</span>
+            <span><b>01</b> {{ t('看懂你的品牌', 'Understand your brand') }}</span
+            ><span><b>02</b> {{ t('安排訪客動線', 'Plan the visitor journey') }}</span
+            ><span><b>03</b> {{ t('一句話再調整', 'Refine in your words') }}</span>
           </div>
-          <p class="studio-help">這裡尚未產生你的網站。</p>
+          <p class="studio-help">{{ t('這裡尚未產生你的網站。', 'Your website has not been generated yet.') }}</p>
         </div>
         <template v-else>
           <div class="studio-result-head">
@@ -580,39 +634,39 @@ function openDetailed() {
               <p class="studio-kicker">
                 {{
                   pending
-                    ? 'REVIEW / 這次，我建議這樣改'
-                    : 'YOUR WEBSITE / 從想法到網站提案'
+                    ? t('REVIEW / 這次，我建議這樣改', 'REVIEW / PROPOSED CHANGES')
+                    : t('YOUR WEBSITE / 從想法到網站提案', 'YOUR WEBSITE / FROM IDEA TO PROPOSAL')
                 }}
               </p>
               <h3 ref="resultHeading" tabindex="-1">
-                {{ renderedBrief?.brandName }}，先從這裡開始。
+                {{ renderedBrief?.brandName }} — {{ t('先從這裡開始。', 'Your website starts here.') }}
               </h3>
             </div>
             <span class="studio-source">{{
               showingConfirmed
-                ? '完整版本已確認'
+                ? t('完整版本已確認', 'Complete version confirmed')
                 : visibleResult?.source === 'llm'
-                ? 'AI 提案・待確認'
-                : '版型預覽・非 AI'
+                ? t('AI 提案・待確認', 'AI proposal · awaiting approval')
+                : t('版型預覽・非 AI', 'Layout preview · no AI copy')
             }}</span>
           </div>
           <section
             v-if="visibleResult?.strategy"
             class="studio-strategy"
-            aria-label="網站規劃提案"
+            :aria-label="t('網站規劃提案', 'Website proposal')"
           >
             <p class="studio-kicker">
               {{
                 visibleResult.strategy.source === 'llm'
-                  ? '我對這個網站的建議'
-                  : '依所選用途安排的基本架構，非 AI 分析'
+                  ? t('我對這個網站的建議', 'The proposal for your website')
+                  : t('依所選用途安排的基本架構，非 AI 分析', 'A basic structure for your goal, not an AI analysis')
               }}
             </p>
             <h4>{{ visibleResult.strategy.proposition }}</h4>
             <p class="studio-audience">
-              <span>希望吸引</span>{{ visibleResult.strategy.audience }}
+              <span>{{ t('希望吸引', 'Who it is for') }}</span>{{ visibleResult.strategy.audience }}
             </p>
-            <div class="studio-journey" aria-label="建議的訪客動線">
+            <div class="studio-journey" :aria-label="t('建議的訪客動線', 'Proposed visitor journey')">
               <button
                 v-for="(step, index) in visibleResult.strategy.journey"
                 :key="index"
@@ -627,14 +681,14 @@ function openDetailed() {
             </div>
             <div class="studio-plan-foot">
               <p>
-                <span>主要行動</span>{{ visibleResult.strategy.primaryAction }}
+                <span>{{ t('主要行動', 'Primary action') }}</span>{{ visibleResult.strategy.primaryAction }}
               </p>
               <p>{{ visibleResult.strategy.designReason }}</p>
             </div>
             <details class="studio-evidence">
-              <summary>根據你說的什麼？還需要確認什麼？</summary>
+              <summary>{{ t('根據你說的什麼？還需要確認什麼？', 'What is this based on, and what needs confirming?') }}</summary>
               <p class="studio-help">
-                以下是你提供的原文；上方策略與 AI 文案仍需要你確認。
+                {{ t('以下是你提供的原文；上方策略與 AI 文案仍需要你確認。', 'These are excerpts you supplied. The proposed strategy and AI copy still need your review.') }}
               </p>
               <blockquote
                 v-for="fact in visibleResult.strategy.facts"
@@ -642,15 +696,15 @@ function openDetailed() {
               >
                 {{ fact }}
               </blockquote>
-              <p class="studio-help">
-                點一個問題，在修改欄補上答案，AI 就能依新資料修改：
+              <p v-if="visibleResult.strategy.questions.length" class="studio-help">
+                {{ t('點一個問題，在修改欄補上答案，AI 就能依新資料修改：', 'Choose a question and add your answer in the edit field to refine the proposal:') }}
               </p>
               <button
                 v-for="question in visibleResult.strategy.questions"
                 :key="question"
                 type="button"
                 :disabled="busy || saving || Boolean(pending)"
-                @click="suggestRevision(`補充資料：${question}\n我的答案：`)"
+                @click="suggestRevision(`${t('補充資料', 'More information')}: ${question}\n${t('我的答案', 'My answer')}: `)"
               >
                 {{ question }} <span aria-hidden="true">↗</span>
               </button>
@@ -659,34 +713,34 @@ function openDetailed() {
           <section
             v-if="pending"
             class="studio-review"
-            aria-label="確認 AI 修改"
+            :aria-label="t('確認 AI 修改', 'Review AI changes')"
           >
             <div>
-              <p class="studio-kicker">CHANGES / 尚未套用</p>
+              <p class="studio-kicker">{{ t('CHANGES / 尚未套用', 'CHANGES / NOT APPLIED') }}</p>
               <h4>
                 {{ pending.preview.changes?.length }}
-                處文字有調整，你決定要不要用。
+                {{ t('處文字有調整，你決定要不要用。', 'text changes. You decide whether to apply them.') }}
               </h4>
               <p>{{ pending.instruction }}</p>
             </div>
-            <div class="studio-compare" role="group" aria-label="比較修改前後">
+            <div class="studio-compare" role="group" :aria-label="t('比較修改前後', 'Compare before and after')">
               <button
                 type="button"
                 :aria-pressed="previewView === 'before'"
                 @click="previewView = 'before'"
               >
-                看原稿</button
+                {{ t('看原稿', 'Before') }}</button
               ><button
                 type="button"
                 :aria-pressed="previewView === 'after'"
                 @click="previewView = 'after'"
               >
-                看修改後
+                {{ t('看修改後', 'After') }}
               </button>
             </div>
             <details class="studio-diff">
               <summary>
-                逐項看文字差異（{{ pending.preview.changes?.length }}）
+                {{ t('逐項看文字差異', 'Inspect each text change') }} ({{ pending.preview.changes?.length }})
               </summary>
               <article
                 v-for="change in pending.preview.changes"
@@ -694,8 +748,8 @@ function openDetailed() {
               >
                 <h5>{{ change.label }}</h5>
                 <div>
-                  <p><b>原本</b>{{ change.before || '（沒有內容）' }}</p>
-                  <p><b>建議改為</b>{{ change.after || '（移除）' }}</p>
+                  <p><b>{{ t('原本', 'Before') }}</b>{{ change.before || t('（沒有內容）', '(empty)') }}</p>
+                  <p><b>{{ t('建議改為', 'Proposed') }}</b>{{ change.after || t('（移除）', '(removed)') }}</p>
                 </div>
               </article>
             </details>
@@ -706,20 +760,20 @@ function openDetailed() {
                 :disabled="!canApply"
                 @click="applyRevision"
               >
-                確認，套用到草稿 ✓</button
+                {{ t('確認，套用到草稿', 'Apply to my draft') }} ✓</button
               ><button
                 type="button"
                 class="studio-text"
                 :disabled="busy || saving"
                 @click="discardRevision"
               >
-                先不要，保留原稿
+                {{ t('先不要，保留原稿', 'Keep the previous version') }}
               </button>
             </div>
           </section>
-          <div class="studio-directions" role="group" aria-label="三種設計方向">
+          <div class="studio-directions" role="group" :aria-label="t('三種設計方向', 'Design directions')">
             <button
-              v-for="direction in STUDIO_DIRECTIONS"
+              v-for="direction in designDirections"
               :key="direction.key"
               type="button"
               :aria-pressed="selectedPreset === direction.key"
@@ -729,6 +783,7 @@ function openDetailed() {
               <span
                 class="studio-color"
                 :class="direction.key"
+                :style="visibleResult?.design ? { background: visibleResult.design.accent } : undefined"
                 aria-hidden="true"
               ></span
               ><strong>{{ direction.label }}</strong
@@ -736,24 +791,34 @@ function openDetailed() {
             </button>
           </div>
           <div class="studio-toolbar">
-            <span>{{ visibleResult?.sourceReason }}</span>
-            <div role="group" aria-label="預覽尺寸">
+            <span>{{ zh ? visibleResult?.sourceReason : visibleResult?.source === 'llm' ? 'Generated by the configured AI. Review before confirming.' : 'Layout only. No accepted AI copy is available.' }}</span>
+            <div role="group" :aria-label="t('預覽尺寸', 'Preview size')">
               <button
                 type="button"
                 :aria-pressed="!mobile"
                 @click="mobile = false"
               >
-                桌面</button
+                {{ t('桌面', 'Desktop') }}</button
               ><button
                 type="button"
                 :aria-pressed="mobile"
                 @click="mobile = true"
               >
-                手機
+                {{ t('手機', 'Mobile') }}
               </button>
             </div>
           </div>
-          <div class="studio-pages" role="group" aria-label="預覽不同頁面">
+          <details v-if="requestDesign && visibleResult?.design" class="studio-visual-controls">
+            <summary>{{ t('直接微調外觀 · 不使用 AI 額度', 'Fine-tune the design · no AI credits') }}</summary>
+            <fieldset :disabled="busy || saving || Boolean(pending) || dirty">
+              <label>{{ t('品牌色', 'Brand colour') }}<input type="color" :value="customAccent || visibleResult.design.accent" @input="customAccent = ($event.target as HTMLInputElement).value"></label>
+              <label>{{ t('背景色', 'Background colour') }}<input type="color" :value="customCanvas || visibleResult.design.canvas" @input="customCanvas = ($event.target as HTMLInputElement).value"></label>
+              <button type="button" @click="refineDesign({ accent: customAccent || visibleResult.design.accent, canvas: customCanvas || visibleResult.design.canvas })">{{ t('套用色彩', 'Apply colours') }}</button>
+              <label>{{ t('字體風格', 'Typography') }}<select :value="visibleResult.design.typography" @change="refineDesign({ typography: ($event.target as HTMLSelectElement).value as StudioDesign['typography'] })"><option value="serif">{{ t('優雅襯線', 'Editorial serif') }}</option><option value="sans">{{ t('簡潔俐落', 'Clean sans-serif') }}</option><option value="rounded">{{ t('柔和圓潤', 'Soft rounded') }}</option><option value="mono">{{ t('理性等寬', 'Precision monospace') }}</option></select></label>
+              <label>{{ t('動態效果', 'Motion') }}<select :value="visibleResult.design.motion" @change="refineDesign({ motion: ($event.target as HTMLSelectElement).value as StudioDesign['motion'] })"><option value="none">{{ t('靜態', 'Still') }}</option><option value="soft">{{ t('柔和進場', 'Soft entrance') }}</option><option value="reveal">{{ t('分層進場', 'Layered reveal') }}</option></select></label>
+            </fieldset>
+          </details>
+          <div class="studio-pages" role="group" :aria-label="t('預覽不同頁面', 'Preview pages')">
             <button
               v-for="page in availablePages"
               :key="page.key"
@@ -770,22 +835,21 @@ function openDetailed() {
               :srcdoc="selectedDesign?.html"
               sandbox=""
               referrerpolicy="no-referrer"
-              :title="`品牌網站設計預覽：${availablePages.find(page => page.key === currentPage)?.label || '首頁'}`"
+              :title="`${t('品牌網站設計預覽', 'Website design preview')}: ${availablePages.find(page => page.key === currentPage)?.label || t('首頁', 'Home')}`"
             ></iframe>
           </div>
           <p class="studio-help">
-            這是可比較的網站草稿，不是已上線網站；預覽內的連結、表單與購物不會執行。AI
-            內容須核對，未提供的商品、價格與成效不能當作真實資料。
+            {{ t('這是可比較的網站草稿，不是已上線網站；預覽內的連結、表單與購物不會執行。AI 內容須核對，未提供的商品、價格與成效不能當作真實資料。', 'This is a draft, not a live site. Links, forms and shopping are inactive in this preview. Review all AI content; unsupplied products, prices and outcomes are not verified facts.') }}
           </p>
           <p v-if="briefChanged" class="studio-change" role="status">
-            品牌需求已調整，請先重新產生預覽，再採用這個方向。
+            {{ t('品牌需求已調整，請先重新產生預覽，再採用這個方向。', 'Your brief changed. Generate an updated preview before confirming.') }}
           </p>
           <p
             v-else-if="revision.trim() && !pending"
             class="studio-change"
             role="status"
           >
-            有一段尚未處理的修改要求。請先看修改建議，或清除要求後採用目前版本。
+            {{ t('有一段尚未處理的修改要求。請先看修改建議，或清除要求後採用目前版本。', 'You have an unprocessed edit. Review the proposed changes or clear the request before confirming this version.') }}
           </p>
           <p v-if="saveError" class="studio-error" role="alert">
             {{ saveError }}
@@ -797,19 +861,26 @@ function openDetailed() {
               :disabled="!history.length || busy || saving || Boolean(pending)"
               @click="undo"
             >
-              ↶ 回到上一版</button
+              ↶ {{ t('回到上一版', 'Restore previous version') }}</button
             ><button
               type="button"
               class="studio-action"
               :disabled="!canContinue"
               @click="continueWithDesign"
             >
-              {{ saving ? '確認完整版本中…' : '確認這個完整版本，繼續上線' }} →
+              {{ saving ? t('確認完整版本中…', 'Confirming…') : t('確認這個完整版本，繼續上線', 'Confirm this version and continue to activation') }} →
             </button>
           </div>
           <p class="studio-help">
-            確認後，正式建置會沿用這份完整文案與版型，不會重新叫 AI 改稿。接著補齊聯絡資料、功能、網域與報價；付款前仍可檢查正式建置的預覽。現在不會付款、購買網域或部署。
+            {{ t('確認後，正式建置會沿用這份完整文案、圖片與版型，不會重新叫 AI 改稿。接著補齊聯絡資料、功能、網域與報價；現在不會付款、購買網域或部署。', 'The confirmed copy, images and design are used for the actual build without another AI rewrite. Contact details, integrations, domain and pricing follow. No payment, domain purchase or deployment occurs now.') }}
           </p>
+          <section v-if="visibleResult?.deliveryReview" class="studio-evidence" aria-label="Delivery checks">
+            <h4>{{ t('交付前還要確認', 'Before activation') }}</h4>
+            <p v-if="visibleResult.deliveryReview.layoutOnly">{{ t('目前僅供排版預覽；請產生並確認正式 AI 文案後再繼續。', 'Layout-only preview. Generate and review the final AI copy before continuing.') }}</p>
+            <p v-if="visibleResult.deliveryReview.missingHeroImage">{{ t('還沒有品牌主圖：可回需求頁加入自己的照片。', 'Brand photography is missing. Return to the brief to add your own image.') }}</p>
+            <p v-if="visibleResult.deliveryReview.unactivatedModules.length">{{ t('所選購物／預約等串接仍未啟用，正式發布會被阻擋，不能用示意畫面交付。', 'Selected integrations are not active. Production is blocked until real functionality replaces the placeholders.') }}</p>
+            <p>{{ t('請實際檢查手機與電腦；參考網站分析不代表已通過像素相似度或動畫驗收。', 'Review mobile and desktop. Reference analysis does not certify pixel similarity or animation fidelity.') }}</p>
+          </section>
         </template>
       </div>
     </div>
@@ -817,6 +888,8 @@ function openDetailed() {
 </template>
 
 <style scoped>
+.studio-visual-controls{border:1px solid #d5cfc3;padding:12px 16px;margin-block:16px}.studio-visual-controls summary{cursor:pointer;font-size:13px;min-height:32px}.studio-visual-controls fieldset{display:flex;flex-wrap:wrap;align-items:end;gap:16px;border:0;padding:16px 0 4px;min-width:0}.studio-visual-controls label{display:grid;gap:6px;font-size:12px}.studio-visual-controls input,.studio-visual-controls select,.studio-visual-controls button{font:inherit;min-height:44px;max-width:100%;background:transparent;border:1px solid #b7a88f;color:inherit;padding:8px}.studio-visual-controls input[type=color]{width:64px;padding:4px}
+.studio-flow{display:flex;justify-content:space-between;gap:16px;list-style:none;margin:0 0 24px;padding:20px 0;border-bottom:1px solid #b7a88f66;font-size:12px}.studio-flow li{opacity:.55}.studio-flow [aria-current]{opacity:1;font-weight:600}
 .design-studio {
   --studio-ink: #171a32;
   --studio-blue: #4d5dad;

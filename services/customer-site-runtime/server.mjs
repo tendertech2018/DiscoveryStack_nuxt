@@ -7,6 +7,7 @@ import { openSiteDatabase } from './lib/store.mjs'
 import { createAuth } from './lib/auth.mjs'
 import { parseConfig, changeVisualSettings } from './lib/config.mjs'
 import { createCommerce } from './lib/commerce.mjs'
+import { createStripePayments } from './lib/stripe.mjs'
 import { createBooking } from './lib/booking.mjs'
 import { createBlog } from './lib/blog.mjs'
 import { createNotifications } from './lib/notifications.mjs'
@@ -39,9 +40,20 @@ export function createSiteRuntime(options) {
   const sessionSecret = options.sessionSecret || (config.mode === 'preview' ? randomBytes(32).toString('hex') : '')
   const auth = createAuth(db, { adminPassword: options.adminPassword, sessionSecret, mode: config.mode })
   const commerce = createCommerce(db, config)
+  const payments = createStripePayments(db, commerce, config, { ...options.stripe, origin: origin.origin })
+  const assetVersion = hash(Buffer.concat(['site.css', 'site.js'].map(file => readFileSync(join(runtimeRoot, 'public', file))))).slice(0, 16)
   const booking = createBooking(db, config)
   const blog = createBlog(db, config)
   const notifications = createNotifications(db, { ...options.notifications, encryptionKey: sessionSecret })
+  function notifyBooking(result) {
+    const configured = notifications.status().configured
+    if (configured && result.contact?.email) {
+      const status = { pending_hold: '等待商家確認', confirmed: '已確認', cancelled: '已取消', rejected: '商家未接受', expired: '保留已逾期' }[result.status] || result.status
+      const link = result.accessToken ? `${origin.origin}/booking#id=${encodeURIComponent(result.id)}&token=${result.accessToken}` : ''
+      notifications.queue({ key: `booking:${result.id}:${result.version}`, to: result.contact.email, subject: `${config.brandName}｜預約${status}`, body: `${result.serviceName}\n${result.startsAt}（${config.booking.timeZone}）\n狀態：${status}\n此通知不代表付款或退款已完成。\n${link ? `請保留此私人查詢連結，不要轉傳：\n${link}` : '請使用建立預約時取得的私人連結查看最新狀態。'}` })
+    }
+    return { ...result, notification: { configured, queued: configured && Boolean(result.contact?.email) } }
+  }
   const uploadsPath = resolve(options.uploadsPath || join(runtimeRoot, 'uploads', config.siteId))
   const secure = origin.protocol === 'https:'
   const setSession = (response, token) => response.setHeader('Set-Cookie', `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800${secure ? '; Secure' : ''}`)
@@ -65,6 +77,8 @@ export function createSiteRuntime(options) {
       const path = url.pathname.replace(/\/$/u, '') || '/'
       const method = request.method || 'GET'
       if (!['GET', 'HEAD', 'POST', 'PATCH', 'DELETE'].includes(method)) fail(405, '此操作不支援')
+      // Stripe cannot supply a browser CSRF token. Only this signed, raw-body endpoint bypasses CSRF.
+      if (path === '/api/payments/stripe/webhook' && method === 'POST') return json(response, payments.webhook(await boundedBody(request, 256_000, false), request.headers['stripe-signature']))
       const token = readToken(request)
       const session = auth.session(token)
       const actor = session?.actor
@@ -105,19 +119,23 @@ export function createSiteRuntime(options) {
       if (path === '/api/products' && method === 'GET') return json(response, { products: commerce.listProducts({ query: url.searchParams.get('q') || undefined, category: url.searchParams.get('category') || undefined }) })
       if (path === '/api/orders' && method === 'POST') {
         if (config.siteType !== 'commerce') fail(404, '此網站未提供購物服務')
+        if (config.commerce.paymentMode.startsWith('stripe_')) payments.assertReady()
         const result = commerce.createOrder(await boundedBody(request))
         const order = result.order || result
-        if (order.customer?.email) notifications.queue({ key: `order:${order.id}`, to: order.customer.email, subject: `${config.brandName}｜訂單已建立，等待付款確認`, body: `訂單 ${order.number} 已建立。此通知不代表已扣款。\n${config.commerce.manualPaymentInstructions || '請依商家指示完成付款。'}` })
+        if (order.customer?.email) notifications.queue({ key: `order:${order.id}`, to: order.customer.email, subject: `${config.brandName}｜訂單已建立，等待付款確認`, body: `訂單 ${order.number} 已建立。此通知不代表已扣款。\n${config.commerce.paymentMode.startsWith('stripe_') ? '請在網站前往安全付款頁，付款結果以金流通知確認為準。' : config.commerce.manualPaymentInstructions || '請依商家指示完成付款。'}` })
         return json(response, result, 201)
       }
       if (path === '/api/orders/lookup' && method === 'POST') return json(response, commerce.lookupOrder(await boundedBody(request)))
       if (/^\/api\/orders\/[^/]+$/u.test(path) && method === 'GET') return json(response, commerce.getOrder(path.split('/').at(-1), request.headers['x-order-token']))
+      if (/^\/api\/orders\/[^/]+\/checkout$/u.test(path) && method === 'POST') { await boundedBody(request); return json(response, await payments.checkout(path.split('/')[3], request.headers['x-order-token'])) }
       if (path === '/api/services' && method === 'GET') return json(response, { services: booking.listServices() })
       if (path === '/api/slots' && method === 'GET') return json(response, { slots: booking.listSlots({ serviceId: url.searchParams.get('serviceId') || undefined }) })
       if (path === '/api/account' && method === 'GET') { const memberId = member(); return json(response, config.siteType === 'commerce' ? { siteType: config.siteType, member: actor, orders: actor.emailVerified === true ? commerce.listMemberOrders(actor.email) : [], emailVerificationRequired: actor.emailVerified !== true } : { siteType: config.siteType, member: actor, balance: booking.balance(memberId), bookings: booking.listBookings(memberId) }) }
       if (path === '/api/bookings' && method === 'POST') { if (config.siteType !== 'booking_blog') fail(404, '此網站未提供預約服務'); return json(response, booking.reserve(member(), await boundedBody(request)), 201) }
       if (/^\/api\/bookings\/[^/]+$/u.test(path) && method === 'PATCH') return json(response, booking.change(member(), path.split('/').at(-1), await boundedBody(request)))
-      if (path === '/api/booking-requests' && method === 'POST') { if (config.siteType !== 'booking_blog') fail(404, '此網站未提供預約服務'); const body = await boundedBody(request); if (body.consent !== true) fail(422, '請先同意預約聯絡資料使用說明'); return json(response, booking.requestGuest(body), 201) }
+      if (path === '/api/booking-requests' && method === 'POST') { if (config.siteType !== 'booking_blog') fail(404, '此網站未提供預約服務'); const body = await boundedBody(request); if (body.consent !== true) fail(422, '請先同意預約聯絡資料使用說明'); return json(response, notifyBooking(booking.requestGuest(body)), 201) }
+      if (/^\/api\/booking-requests\/[^/]+$/u.test(path) && method === 'GET') return json(response, booking.getGuest(path.split('/').at(-1), request.headers['x-booking-token']))
+      if (/^\/api\/booking-requests\/[^/]+$/u.test(path) && method === 'PATCH') return json(response, notifyBooking(booking.changeGuest(path.split('/').at(-1), request.headers['x-booking-token'], await boundedBody(request))))
       if (path === '/api/journal' && method === 'GET') return json(response, { posts: blog.list() })
       if (path === '/api/contact' && method === 'POST') {
         const body = await boundedBody(request)
@@ -135,13 +153,13 @@ export function createSiteRuntime(options) {
         if (path === '/api/admin/services' && ['GET', 'POST', 'PATCH'].includes(method)) return json(response, method === 'GET' ? { services: booking.listServices({ admin: true }) } : booking.saveService(await boundedBody(request)))
         if (path === '/api/admin/slots' && ['GET', 'POST', 'PATCH'].includes(method)) return json(response, method === 'GET' ? { slots: booking.listSlots({ admin: true }) } : booking.saveSlot(await boundedBody(request)))
         if (path === '/api/admin/bookings' && method === 'GET') return json(response, { bookings: booking.listBookings() })
-        if (/^\/api\/admin\/bookings\/[^/]+$/u.test(path) && method === 'PATCH') return json(response, booking.confirmGuest(path.split('/').at(-1), await boundedBody(request)))
+        if (/^\/api\/admin\/bookings\/[^/]+$/u.test(path) && method === 'PATCH') return json(response, notifyBooking(booking.confirmGuest(path.split('/').at(-1), await boundedBody(request))))
         if (path === '/api/admin/members' && method === 'GET') return json(response, { members: auth.listMembers().map(row => ({ ...row, balance: booking.balance(row.id) })) })
         if (path === '/api/admin/credits' && method === 'POST') { const body = await boundedBody(request); if (!auth.member(body.memberId)) fail(404, '找不到會員'); return json(response, booking.adjustCredits(body.memberId, body)) }
         if (path === '/api/admin/blog' && ['GET', 'POST', 'PATCH'].includes(method)) return json(response, method === 'GET' ? { posts: blog.list({ admin: true }) } : blog.save(await boundedBody(request)))
         const postAction = /^\/api\/admin\/blog\/([^/]+)\/(publish|unpublish|restore|revisions)$/u.exec(path)
         if (postAction) { const [, postId, action] = postAction; if (action === 'revisions' && method === 'GET') return json(response, { revisions: blog.revisions(postId) }); if (method === 'POST') { const body = await boundedBody(request); return json(response, action === 'restore' ? blog.restore(postId, body.revisionId, body.version) : blog[action](postId, body.version)) } }
-        if (path === '/api/admin/settings' && method === 'GET') return json(response, { config, notifications: notifications.status() })
+        if (path === '/api/admin/settings' && method === 'GET') return json(response, { config, notifications: notifications.status(), payments: payments.status() })
         if (path === '/api/admin/settings' && method === 'PATCH') { config = changeVisualSettings(config, await boundedBody(request)); db.prepare('INSERT INTO site_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET config=excluded.config').run(JSON.stringify(config)); return json(response, { config }) }
         if (path === '/api/admin/contact-messages' && method === 'GET') return json(response, { messages: db.prepare('SELECT * FROM contact_messages ORDER BY id DESC LIMIT 200').all() })
         if (path === '/api/admin/media' && method === 'POST') {
@@ -167,14 +185,14 @@ export function createSiteRuntime(options) {
       }
       if (path === '/admin' && actor?.role !== 'admin') { response.statusCode = 302; response.setHeader('Location', '/admin/login'); return response.end() }
       response.setHeader('Content-Type', 'text/html; charset=utf-8')
-      const html = renderPage({ config, path, commerce, booking, blog, actor, query: Object.fromEntries(url.searchParams), members: actor?.role === 'admin' ? auth.listMembers().map(row => ({ ...row, balance: booking.balance(row.id) })) : [], origin: origin.origin })
+      const html = renderPage({ config, path, commerce, booking, blog, actor, assetVersion, payments: payments.status(), query: Object.fromEntries(url.searchParams), members: actor?.role === 'admin' ? auth.listMembers().map(row => ({ ...row, balance: booking.balance(row.id) })) : [], origin: origin.origin })
       if (!html) fail(404, '找不到頁面')
       response.end(method === 'HEAD' ? undefined : html)
     } catch (error) {
       json(response, { error: error.status && error.status < 500 ? error.message : error.status === 503 ? error.message : '操作沒有完成，請稍後重試；既有資料不受影響。', code: error.code || 'REQUEST_FAILED' }, error.status || 500)
     }
   }
-  return { handle, db, auth, commerce, booking, blog, notifications, get config() { return config }, close: () => db.close() }
+  return { handle, db, auth, commerce, payments, booking, blog, notifications, get config() { return config }, close: () => db.close() }
 }
 
 export async function startSiteRuntime(options) {
@@ -193,7 +211,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const configPath = process.env.SITE_CONFIG_PATH
   if (!configPath) throw new Error('SITE_CONFIG_PATH_REQUIRED')
   const siteConfig = parseConfig(JSON.parse(readFileSync(resolve(configPath), 'utf8')))
-  const instance = await startSiteRuntime({ config: siteConfig, origin: process.env.SITE_ORIGIN, port: Number(process.env.PORT || 3002), host: process.env.HOST || '127.0.0.1', databasePath: process.env.SITE_DATABASE_PATH || resolve('data', siteConfig.siteId, 'site.sqlite'), uploadsPath: process.env.SITE_UPLOADS_PATH || resolve('data', siteConfig.siteId, 'uploads'), adminPassword: process.env.SITE_ADMIN_PASSWORD, sessionSecret: process.env.SITE_SESSION_SECRET, notifications: { enabled: process.env.SITE_NOTIFICATIONS_ENABLED === 'true', apiKey: process.env.RESEND_API_KEY, from: process.env.RESEND_FROM } })
+  const instance = await startSiteRuntime({ config: siteConfig, origin: process.env.SITE_ORIGIN, port: Number(process.env.PORT || 3002), host: process.env.HOST || '127.0.0.1', databasePath: process.env.SITE_DATABASE_PATH || resolve('data', siteConfig.siteId, 'site.sqlite'), uploadsPath: process.env.SITE_UPLOADS_PATH || resolve('data', siteConfig.siteId, 'uploads'), adminPassword: process.env.SITE_ADMIN_PASSWORD, sessionSecret: process.env.SITE_SESSION_SECRET, stripe: { secretKey: process.env.SITE_STRIPE_SECRET_KEY, webhookSecret: process.env.SITE_STRIPE_WEBHOOK_SECRET }, notifications: { enabled: process.env.SITE_NOTIFICATIONS_ENABLED === 'true', apiKey: process.env.RESEND_API_KEY, from: process.env.RESEND_FROM } })
   console.log(`Customer site ready (${siteConfig.mode}); database and administrator credentials are isolated.`)
   for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => { void instance.stop() })
 }

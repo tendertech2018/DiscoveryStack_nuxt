@@ -15,6 +15,30 @@
 * {
   box-sizing: border-box;
 }
+[hidden] {
+  display: none !important;
+}
+.order-receipt {
+  width: min(680px, calc(100% - 40px));
+  margin: 32px auto 88px;
+  padding: clamp(24px, 5vw, 48px);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+.order-receipt h2 {
+  margin-top: 0;
+  font-size: clamp(20px, 3vw, 26px);
+  line-height: 1.5;
+}
+.order-receipt ul {
+  padding-inline-start: 20px;
+}
+.order-receipt .button {
+  margin-top: 20px;
+  max-width: 100%;
+  white-space: normal;
+}
 body {
   margin: 0;
   background: var(--paper);

@@ -1,6 +1,6 @@
 import { createError } from 'h3'
 import type { ManagedSiteFunnelSession } from '../../database/schema'
-import { studioAnswers, studioBriefKey, type StudioPreviewRequest, type StudioPreset, type StudioSelection } from '../../../utils/managedSiteStudio'
+import { studioAnswers, studioBriefKey, studioRequiredModules, type StudioPreviewRequest, type StudioPreset, type StudioSelection } from '../../../utils/managedSiteStudio'
 import { normalizedModulesForSiteType } from '../../../utils/managedSiteFunnel'
 import { managedSiteStableFingerprint } from '../live-connectors/canonical'
 import type { ManagedSiteBlueprintV1 } from '../live-connectors/types'
@@ -10,6 +10,7 @@ import type { FunnelPreviewDraftDependencies } from './preview-draft-service'
 import { funnelSessionRevision, type FunnelSessionRepository } from './session-repository'
 import type { FunnelAnswers } from './session-service'
 import { findStudioProposal, studioContentAnswersFingerprint, studioConflict, studioProposalId, type FunnelStudioState, type StoredStudioProposal } from './studio-state'
+import { guidedStudioBrief, studioIntakeState } from './studio-intake'
 
 function mutable(session: ManagedSiteFunnelSession) {
   if (session.status !== 'active' || session.previewId || session.projectId || session.releaseId) studioConflict()
@@ -19,15 +20,22 @@ export async function generateAndStoreStudioProposal(session: ManagedSiteFunnelS
   mutable(session)
   const revision = funnelSessionRevision(session)
   const answers = structuredClone(session.answers || {}) as FunnelAnswers
+  const intake = studioIntakeState(session)
+  let basePresentation: ManagedSiteBlueprintV1['studioPresentation']
+  if (input.guidedRevision !== undefined) {
+    const expected = guidedStudioBrief(intake)
+    if (!expected || input.guidedRevision !== intake.revision || studioBriefKey(expected) !== studioBriefKey(input)) studioConflict()
+  }
   if (input.revision) {
     const base = findStudioProposal(session.id, answers.studio, input.revision.proposalId || '')
     if (studioBriefKey(base.brief) !== studioBriefKey(input) || managedSiteStableFingerprint(projectStudioCopy(base.blueprint)) !== managedSiteStableFingerprint(input.revision.base)) studioConflict()
+    basePresentation = base.blueprint.studioPresentation
   }
   let blueprint: ManagedSiteBlueprintV1 | undefined
-  const preview = await generateStudioPreview(session, input, { ...dependencies, onBlueprint: value => { blueprint = value } })
+  const preview = await generateStudioPreview(session, input, { ...dependencies, ...(input.guidedRevision !== undefined ? { studioMedia: intake.media, studioStyle: intake.facts.style, ...(intake.reference ? { studioDesign: intake.reference.design } : {}) } : {}), studioBasePresentation: basePresentation, onBlueprint: value => { blueprint = value } })
   if (!blueprint) throw createError({ statusCode: 503, statusMessage: '完整提案尚未完成，請稍後再試。' })
   const content: Omit<StoredStudioProposal, 'id'> = {
-    brief: { brandName: input.brandName, brief: input.brief, siteType: input.siteType, goal: input.goal },
+    brief: { brandName: input.brandName, brief: input.brief, siteType: input.siteType, goal: input.goal, ...(input.language ? { language: input.language } : {}), ...(input.audience ? { audience: input.audience } : {}), ...(input.market ? { market: input.market } : {}), ...(input.guidedRevision !== undefined ? { guidedRevision: input.guidedRevision } : {}) },
     blueprint, source: preview.source, sourceReason: preview.sourceReason, generatedAt: preview.generatedAt,
     ...(preview.strategy ? { strategy: preview.strategy } : {}),
   }
@@ -38,6 +46,13 @@ export async function generateAndStoreStudioProposal(session: ManagedSiteFunnelS
   const pinned = previous?.proposals.find(item => item.id === previous.confirmed?.proposalId)
   if (pinned && !recent.some(item => item.id === pinned.id)) recent.unshift(pinned)
   const studio: FunnelStudioState = { schemaVersion: 'funnel-studio-state-v1', proposals: recent, confirmed: previous?.confirmed || null }
+  // Large customer images are immutable per version. Evict only the oldest unconfirmed versions,
+  // never the latest or the confirmed version; the browser cannot restore an evicted identity.
+  while (Buffer.byteLength(JSON.stringify({ ...answers, studio }), 'utf8') > 600_000) {
+    const removable = studio.proposals.findIndex(item => item.id !== proposal.id && item.id !== studio.confirmed?.proposalId)
+    if (removable < 0) break
+    studio.proposals.splice(removable, 1)
+  }
   if (Buffer.byteLength(JSON.stringify(studio), 'utf8') > 512_000) throw createError({ statusCode: 413, statusMessage: '提案內容過大，請縮短文案後再試。' })
   const updated = await repository.transitionSession(session.id, 'active', { answers: { ...answers, studio } }, revision)
   if (!updated) studioConflict()
@@ -50,13 +65,14 @@ export async function confirmStudioProposal(session: ManagedSiteFunnelSession, i
   if (typeof input.proposalId !== 'string' || !/^[a-f0-9]{64}$/u.test(input.proposalId) || !['atelier', 'bloom', 'alignment'].includes(String(input.preset))) studioConflict()
   const answers = structuredClone(session.answers || {}) as FunnelAnswers
   const proposal = findStudioProposal(session.id, answers.studio, input.proposalId)
+  if (proposal.brief.guidedRevision !== undefined && proposal.source !== 'llm') throw createError({ statusCode: 409, statusMessage: 'This is a layout-only draft. Generate and review the final AI copy before confirming delivery.', data: { code: 'STUDIO_LAYOUT_ONLY' } })
   const preset = input.preset as StudioPreset
   const selected = studioAnswers(proposal.brief, preset)
   const next: FunnelAnswers = {
     ...answers, ...selected,
     existingSite: answers.existingSite || { hasSite: false },
     style: { ...selected.style!, designTier: answers.style?.designTier || 'template', referenceUrls: answers.style?.referenceUrls || [] },
-    modules: normalizedModulesForSiteType(proposal.brief.siteType, answers.modules),
+    modules: normalizedModulesForSiteType(proposal.brief.siteType, [...(answers.modules || []), ...studioRequiredModules(proposal.brief)]),
     previewDraft: { source: proposal.source, generatedAt: proposal.generatedAt, headline: proposal.blueprint.pages[0]!.title, sections: proposal.blueprint.pages[0]!.sections.map(({ heading, body }) => ({ heading, body: body.slice(0, 2000) })) },
   }
   next.studio = { ...answers.studio!, confirmed: { proposalId: proposal.id, preset, answersFingerprint: studioContentAnswersFingerprint(next), confirmedAt: clock().toISOString() } }
@@ -79,7 +95,8 @@ export function restoreStudioProposal(session: ManagedSiteFunnelSession): Studio
 }
 
 export function studioSessionProjection(session: ManagedSiteFunnelSession) {
-  const { studio, ...answers } = (session.answers || {}) as FunnelAnswers
+  const { studio, studioIntake: _intake, ...answers } = (session.answers || {}) as FunnelAnswers
   const confirmed = Boolean(studio?.confirmed && studio.confirmed.answersFingerprint === studioContentAnswersFingerprint(answers))
-  return { answers, studio: studio ? { confirmed, hasProposal: studio.proposals.length > 0, proposalId: studio.confirmed?.proposalId || null } : null }
+  // Conversation language is not the publication language (e.g. a French customer building a Japanese site).
+  return { answers, ...(_intake?.revision ? { conversationLanguage: _intake.language } : {}), studio: studio ? { confirmed, hasProposal: studio.proposals.length > 0, proposalId: studio.confirmed?.proposalId || null, buildStarted: Boolean(session.previewId || session.projectId || session.releaseId || session.status === 'building' || session.builtPreviewUrl) } : null }
 }
