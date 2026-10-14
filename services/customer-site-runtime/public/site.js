@@ -543,6 +543,11 @@
       `已收到訂單 ${result.number || ""}。目前尚未收款。`
     );
     await showOrder(result, form);
+    form.hidden = true;
+    const heading = document.querySelector("main h1");
+    if (heading) heading.textContent = "訂單已建立";
+    const receipt = $("[data-order-details]");
+    if (receipt) { receipt.tabIndex = -1; receipt.focus(); }
   });
   submit($("[data-order-lookup]"), async (data, form) => {
     const result = await api("/api/orders/lookup", {
