@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { fail, id, integer, iso, text } from './errors.mjs'
 import { transaction } from './store.mjs'
 import { mediaUrl } from './config.mjs'
+import { CURRENCIES } from '../public/locale.mjs'
 
 const MAX_MONEY = 1_000_000_000_000
 const MAX_STOCK = 1_000_000_000
@@ -89,7 +90,7 @@ function configInteger(value, label, fallback, min, max) {
 function settings(config) {
   const commerce = config?.commerce ?? {}
   const currency = commerce.currency ?? 'TWD'
-  if (currency !== 'TWD') fail(500, '目前商店僅支援 TWD', 'COMMERCE_CONFIG_INVALID')
+  if (!Object.hasOwn(CURRENCIES, currency)) fail(500, 'Unsupported store currency', 'COMMERCE_CONFIG_INVALID')
   const requestedMode = commerce.paymentMode ?? 'disabled'
   if (!['disabled', 'manual', 'sandbox', 'stripe_test', 'stripe_live'].includes(requestedMode)) fail(500, '付款模式設定不正確', 'COMMERCE_CONFIG_INVALID')
   const production = config?.production === true || config?.mode === 'production' || config?.runtimeMode === 'production'
@@ -331,6 +332,12 @@ export function createCommerce(db, config = {}) {
   if (!db || typeof db.prepare !== 'function' || typeof db.exec !== 'function') fail(500, '商店資料庫未正確連線', 'COMMERCE_DATABASE_REQUIRED')
   const commerceSettings = settings(config)
   initialize(db)
+  // Currency is a database invariant: changing a setting must never relabel old prices.
+  db.exec('CREATE TABLE IF NOT EXISTS commerce_currency (id INTEGER PRIMARY KEY CHECK(id=1), currency TEXT NOT NULL)')
+  const boundCurrency = db.prepare('SELECT currency FROM commerce_currency WHERE id=1').get()?.currency
+  const legacyData = db.prepare('SELECT 1 FROM commerce_products LIMIT 1').get() || db.prepare('SELECT 1 FROM commerce_orders LIMIT 1').get()
+  if ((boundCurrency && boundCurrency !== commerceSettings.currency) || (!boundCurrency && legacyData && commerceSettings.currency !== 'TWD')) fail(409, 'Store currency cannot change after prices exist', 'CURRENCY_IMMUTABLE')
+  db.prepare('INSERT OR IGNORE INTO commerce_currency VALUES(1,?)').run(commerceSettings.currency)
 
   function listProducts({ admin = false, query, category } = {}) {
     if (typeof admin !== 'boolean') fail(422, '商品查詢格式不正確')

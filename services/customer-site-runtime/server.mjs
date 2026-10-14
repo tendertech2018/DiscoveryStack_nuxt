@@ -13,6 +13,10 @@ import { createBlog } from './lib/blog.mjs'
 import { createNotifications } from './lib/notifications.mjs'
 import { renderPage } from './lib/render.mjs'
 import { fail, text } from './lib/errors.mjs'
+import { createDelivery, deliveryFingerprint } from './lib/delivery.mjs'
+import { createTranslator, customerError } from './public/locale.mjs'
+import { createMerchantSecrets } from './lib/merchant-secrets.mjs'
+import { notificationCopy } from './lib/notification-copy.mjs'
 
 const runtimeRoot = dirname(fileURLToPath(import.meta.url))
 const cookieName = 'ds_customer_site_session'
@@ -39,18 +43,25 @@ export function createSiteRuntime(options) {
   if (stored) config = parseConfig({ ...config, ...JSON.parse(stored.config), mode: config.mode, siteId: config.siteId, siteType: config.siteType, commerce: config.commerce, booking: config.booking })
   const sessionSecret = options.sessionSecret || (config.mode === 'preview' ? randomBytes(32).toString('hex') : '')
   const auth = createAuth(db, { adminPassword: options.adminPassword, sessionSecret, mode: config.mode })
-  const commerce = createCommerce(db, config)
-  const payments = createStripePayments(db, commerce, config, { ...options.stripe, origin: origin.origin })
-  const assetVersion = hash(Buffer.concat(['site.css', 'site.js'].map(file => readFileSync(join(runtimeRoot, 'public', file))))).slice(0, 16)
+  const merchantSecrets = createMerchantSecrets(db, config, options.sessionSecret)
+  const savedStripe = config.mode === 'preview' ? merchantSecrets.read() : null
+  if (savedStripe) config.commerce.paymentMode = 'stripe_test'
+  let commerce = createCommerce(db, config)
+  let payments = createStripePayments(db, commerce, config, { ...options.stripe, ...savedStripe, origin: origin.origin })
+  const assetVersion = hash(Buffer.concat(['site.css', 'site.js', 'locale.mjs', 'messages.mjs', 'customer-languages.mjs'].map(file => readFileSync(join(runtimeRoot, 'public', file))))).slice(0, 16)
   const booking = createBooking(db, config)
+  const delivery = createDelivery(db, config, { initial: options.approvedDelivery, key: options.deploymentKey, origin: origin.origin, durable: options.durableStorage === true && Boolean(options.databasePath) && options.databasePath !== ':memory:', commerce, booking, payments: () => payments.status() })
+  const t = createTranslator(config.locale)
+  const mail = notificationCopy(config.locale)
   const blog = createBlog(db, config)
   const notifications = createNotifications(db, { ...options.notifications, encryptionKey: sessionSecret })
   function notifyBooking(result) {
     const configured = notifications.status().configured
     if (configured && result.contact?.email) {
-      const status = { pending_hold: '等待商家確認', confirmed: '已確認', cancelled: '已取消', rejected: '商家未接受', expired: '保留已逾期' }[result.status] || result.status
+      const status = t({ pending_hold: '等待商家確認', confirmed: '已確認', cancelled: '已取消', rejected: '未接受', expired: '已逾期' }[result.status] || result.status)
       const link = result.accessToken ? `${origin.origin}/booking#id=${encodeURIComponent(result.id)}&token=${result.accessToken}` : ''
-      notifications.queue({ key: `booking:${result.id}:${result.version}`, to: result.contact.email, subject: `${config.brandName}｜預約${status}`, body: `${result.serviceName}\n${result.startsAt}（${config.booking.timeZone}）\n狀態：${status}\n此通知不代表付款或退款已完成。\n${link ? `請保留此私人查詢連結，不要轉傳：\n${link}` : '請使用建立預約時取得的私人連結查看最新狀態。'}` })
+      const time = new Intl.DateTimeFormat(config.locale, { timeZone: config.booking.timeZone, dateStyle: 'full', timeStyle: 'short' }).format(new Date(result.startsAt))
+      notifications.queue({ key: `booking:${result.id}:${result.version}`, to: result.contact.email, subject: `${config.brandName} | ${mail.booking}: ${status}`, body: `${result.serviceName}\n${time} (${config.booking.timeZone})\n${mail.status}: ${status}\n${mail.notPayment}\n${link ? `${mail.privateLink}\n${link}` : mail.originalLink}` })
     }
     return { ...result, notification: { configured, queued: configured && Boolean(result.contact?.email) } }
   }
@@ -68,7 +79,7 @@ export function createSiteRuntime(options) {
     response.setHeader('X-Content-Type-Options', 'nosniff')
     response.setHeader('Referrer-Policy', 'no-referrer')
     response.setHeader('X-Frame-Options', 'DENY')
-    response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+    response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
     response.setHeader('Cache-Control', 'private, no-store')
     if (config.mode === 'preview' || request.url?.startsWith('/api/') || request.url?.startsWith('/admin') || request.url?.startsWith('/account')) response.setHeader('X-Robots-Tag', 'noindex, nofollow')
     try {
@@ -77,11 +88,14 @@ export function createSiteRuntime(options) {
       const path = url.pathname.replace(/\/$/u, '') || '/'
       const method = request.method || 'GET'
       if (!['GET', 'HEAD', 'POST', 'PATCH', 'DELETE'].includes(method)) fail(405, '此操作不支援')
+      // This sole non-browser route requires a short-lived signature bound to exact bytes/origin/site.
+      if (path === '/api/deployment' && method === 'POST') return json(response, delivery.publish(await boundedBody(request, 2_000_000, false), request.headers['x-site-deploy-time'], request.headers['x-site-deploy-signature']))
       // Stripe cannot supply a browser CSRF token. Only this signed, raw-body endpoint bypasses CSRF.
       if (path === '/api/payments/stripe/webhook' && method === 'POST') return json(response, payments.webhook(await boundedBody(request, 256_000, false), request.headers['stripe-signature']))
       const token = readToken(request)
       const session = auth.session(token)
       const actor = session?.actor
+      if (config.mode === 'production' && options.approvedDelivery && !delivery.current() && actor?.role !== 'admin' && !path.startsWith('/admin') && !path.startsWith('/api/admin/') && !path.startsWith('/assets/') && !['/health', '/api/session', '/api/auth/logout'].includes(path)) fail(503, 'Website publication is awaiting verification', 'PUBLICATION_REQUIRED')
       const address = request.socket?.remoteAddress || 'unknown'
       const mutation = !['GET', 'HEAD'].includes(method)
       if (mutation) {
@@ -91,14 +105,14 @@ export function createSiteRuntime(options) {
       }
       const admin = () => { if (actor?.role !== 'admin') fail(401, '請先登入管理後台') }
       const member = () => { if (actor?.role !== 'member' || !actor.id) fail(401, '請先登入會員'); return actor.id }
-      if (path === '/health' && method === 'GET') return json(response, { status: 'ok', siteId: config.siteId, mode: config.mode, version: 'customer-site-runtime-v1' })
+      if (path === '/health' && method === 'GET') return json(response, { status: 'ok', siteId: config.siteId, mode: config.mode, version: 'customer-site-runtime-v1', deliveryHash: delivery.current()?.contentHash || null })
       if (path === '/api/session' && method === 'GET') {
         if (!session) rateLimit(address, 'anonymous-session')
         const current = session || auth.issue()
         if (current.token) setSession(response, current.token)
         return json(response, { actor: current.actor, csrfToken: current.csrfToken })
       }
-      if (['GET', 'HEAD'].includes(method) && ['/assets/site.css', '/assets/site.js'].includes(path)) { response.setHeader('Content-Type', path.endsWith('.css') ? 'text/css' : 'text/javascript'); response.setHeader('Cache-Control', 'public,max-age=300'); return response.end(method === 'HEAD' ? undefined : readFileSync(join(runtimeRoot, 'public', path.split('/').at(-1)))) }
+      if (['GET', 'HEAD'].includes(method) && ['/assets/site.css', '/assets/site.js', '/assets/locale.mjs', '/assets/messages.mjs', '/assets/customer-languages.mjs'].includes(path)) { response.setHeader('Content-Type', path.endsWith('.css') ? 'text/css' : 'text/javascript'); response.setHeader('Cache-Control', 'public,max-age=300'); return response.end(method === 'HEAD' ? undefined : readFileSync(join(runtimeRoot, 'public', path.split('/').at(-1)))) }
       if (['GET', 'HEAD'].includes(method) && /^\/media\/[a-f0-9]{64}\.(png|jpg|webp)$/u.test(path)) { const filename = join(uploadsPath, path.split('/').at(-1)); if (!existsSync(filename)) fail(404, '找不到圖片'); response.setHeader('Content-Type', `image/${path.endsWith('.jpg') ? 'jpeg' : path.split('.').at(-1)}`); response.setHeader('Cache-Control', 'public,max-age=31536000,immutable'); return response.end(method === 'HEAD' ? undefined : readFileSync(filename)) }
       if (path === '/api/auth/register' && method === 'POST') { const result = auth.register(await boundedBody(request), address); if (token) auth.logout(token); setSession(response, result.token); return json(response, { actor: result.actor, csrfToken: result.csrfToken }, 201) }
       if (['/api/auth/login', '/api/admin/login'].includes(path) && method === 'POST') { const result = auth.login(await boundedBody(request), address, path.includes('/admin/')); if (token) auth.logout(token); setSession(response, result.token); return json(response, { actor: result.actor, csrfToken: result.csrfToken }) }
@@ -109,7 +123,7 @@ export function createSiteRuntime(options) {
         if (result.delivery) {
           const { to, token: actionToken, kind } = result.delivery
           const link = `${origin.origin}/${kind === 'password_reset' ? 'reset-password' : 'verify-email'}#token=${actionToken}`
-          notifications.queue({ key: `account:${kind}:${hash(actionToken)}`, to, subject: `${config.brandName}｜${kind === 'password_reset' ? '重設密碼' : '驗證會員信箱'}`, body: `${kind === 'password_reset' ? '請開啟下方連結重設密碼' : '請開啟下方連結確認信箱'}（30 分鐘內有效，僅能使用一次）：\n${link}\n若非本人操作，請忽略此信。` })
+          notifications.queue({ key: `account:${kind}:${hash(actionToken)}`, to, subject: `${config.brandName} | ${kind === 'password_reset' ? mail.reset : mail.verify}`, body: `${mail.expires}\n${link}\n${mail.ignore}` })
         }
         void notifications.flush()
         return json(response, result.receipt)
@@ -122,7 +136,7 @@ export function createSiteRuntime(options) {
         if (config.commerce.paymentMode.startsWith('stripe_')) payments.assertReady()
         const result = commerce.createOrder(await boundedBody(request))
         const order = result.order || result
-        if (order.customer?.email) notifications.queue({ key: `order:${order.id}`, to: order.customer.email, subject: `${config.brandName}｜訂單已建立，等待付款確認`, body: `訂單 ${order.number} 已建立。此通知不代表已扣款。\n${config.commerce.paymentMode.startsWith('stripe_') ? '請在網站前往安全付款頁，付款結果以金流通知確認為準。' : config.commerce.manualPaymentInstructions || '請依商家指示完成付款。'}` })
+        if (order.customer?.email) notifications.queue({ key: `order:${order.id}`, to: order.customer.email, subject: `${config.brandName} | ${mail.order}`, body: `${t('訂單')}: ${order.number}\n${mail.notPayment}\n${config.commerce.paymentMode.startsWith('stripe_') ? mail.payment : config.commerce.manualPaymentInstructions || mail.manual}` })
         return json(response, result, 201)
       }
       if (path === '/api/orders/lookup' && method === 'POST') return json(response, commerce.lookupOrder(await boundedBody(request)))
@@ -147,6 +161,13 @@ export function createSiteRuntime(options) {
       }
       if (path.startsWith('/api/admin/')) {
         admin()
+        if (path === '/api/admin/stripe-test' && method === 'POST') {
+          const receipt = merchantSecrets.save(await boundedBody(request, 2048))
+          config.commerce.paymentMode = 'stripe_test'
+          commerce = createCommerce(db, config)
+          payments = createStripePayments(db, commerce, config, { ...options.stripe, ...merchantSecrets.read(), origin: origin.origin })
+          return json(response, receipt)
+        }
         if (path === '/api/admin/products' && ['GET', 'POST', 'PATCH'].includes(method)) return json(response, method === 'GET' ? { products: commerce.listProducts({ admin: true }) } : commerce.saveProduct(await boundedBody(request)))
         if (path === '/api/admin/orders' && method === 'GET') return json(response, { orders: commerce.listOrders() })
         if (/^\/api\/admin\/orders\/[^/]+$/u.test(path) && method === 'PATCH') return json(response, commerce.transitionOrder(path.split('/').at(-1), await boundedBody(request)))
@@ -160,7 +181,13 @@ export function createSiteRuntime(options) {
         const postAction = /^\/api\/admin\/blog\/([^/]+)\/(publish|unpublish|restore|revisions)$/u.exec(path)
         if (postAction) { const [, postId, action] = postAction; if (action === 'revisions' && method === 'GET') return json(response, { revisions: blog.revisions(postId) }); if (method === 'POST') { const body = await boundedBody(request); return json(response, action === 'restore' ? blog.restore(postId, body.revisionId, body.version) : blog[action](postId, body.version)) } }
         if (path === '/api/admin/settings' && method === 'GET') return json(response, { config, notifications: notifications.status(), payments: payments.status() })
-        if (path === '/api/admin/settings' && method === 'PATCH') { config = changeVisualSettings(config, await boundedBody(request)); db.prepare('INSERT INTO site_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET config=excluded.config').run(JSON.stringify(config)); return json(response, { config }) }
+        if (path === '/api/admin/settings' && method === 'PATCH') {
+          const next = changeVisualSettings(config, await boundedBody(request))
+          if (delivery.current() && ['preset', 'tagline', 'description', 'hero', 'about'].some(key => deliveryFingerprint(config[key]) !== deliveryFingerprint(next[key]))) fail(409, 'Review a new design before replacing the approved website', 'APPROVED_DESIGN_LOCKED')
+          Object.assign(config, next)
+          db.prepare('INSERT INTO site_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET config=excluded.config').run(JSON.stringify(config))
+          return json(response, { config })
+        }
         if (path === '/api/admin/contact-messages' && method === 'GET') return json(response, { messages: db.prepare('SELECT * FROM contact_messages ORDER BY id DESC LIMIT 200').all() })
         if (path === '/api/admin/media' && method === 'POST') {
           const bytes = await boundedBody(request, 2 * 1024 * 1024, false)
@@ -185,14 +212,17 @@ export function createSiteRuntime(options) {
       }
       if (path === '/admin' && actor?.role !== 'admin') { response.statusCode = 302; response.setHeader('Location', '/admin/login'); return response.end() }
       response.setHeader('Content-Type', 'text/html; charset=utf-8')
-      const html = renderPage({ config, path, commerce, booking, blog, actor, assetVersion, payments: payments.status(), query: Object.fromEntries(url.searchParams), members: actor?.role === 'admin' ? auth.listMembers().map(row => ({ ...row, balance: booking.balance(row.id) })) : [], origin: origin.origin })
+      const html = delivery.page(path) || renderPage({ config, path: path === '/store' ? '/shop' : path === '/inquiry' ? '/contact' : path, commerce, booking, blog, actor, assetVersion, payments: payments.status(), query: Object.fromEntries(url.searchParams), members: actor?.role === 'admin' ? auth.listMembers().map(row => ({ ...row, balance: booking.balance(row.id) })) : [], origin: origin.origin })
       if (!html) fail(404, '找不到頁面')
       response.end(method === 'HEAD' ? undefined : html)
     } catch (error) {
-      json(response, { error: error.status && error.status < 500 ? error.message : error.status === 503 ? error.message : '操作沒有完成，請稍後重試；既有資料不受影響。', code: error.code || 'REQUEST_FAILED' }, error.status || 500)
+      const source = error.status && error.status < 500 ? error.message : error.status === 503 ? error.message : '操作沒有完成，請稍後重試；既有資料不受影響。'
+      const translated = t(source)
+      const publicMessage = !config.locale.startsWith('zh') && /[\u3400-\u9fff]/u.test(translated) ? customerError(error.status || 500, config.locale) : translated
+      json(response, { error: publicMessage, code: error.code || 'REQUEST_FAILED' }, error.status || 500)
     }
   }
-  return { handle, db, auth, commerce, payments, booking, blog, notifications, get config() { return config }, close: () => db.close() }
+  return { handle, db, auth, get commerce() { return commerce }, get payments() { return payments }, booking, blog, delivery, notifications, get config() { return config }, close: () => db.close() }
 }
 
 export async function startSiteRuntime(options) {
@@ -210,8 +240,9 @@ export async function startSiteRuntime(options) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const configPath = process.env.SITE_CONFIG_PATH
   if (!configPath) throw new Error('SITE_CONFIG_PATH_REQUIRED')
-  const siteConfig = parseConfig(JSON.parse(readFileSync(resolve(configPath), 'utf8')))
-  const instance = await startSiteRuntime({ config: siteConfig, origin: process.env.SITE_ORIGIN, port: Number(process.env.PORT || 3002), host: process.env.HOST || '127.0.0.1', databasePath: process.env.SITE_DATABASE_PATH || resolve('data', siteConfig.siteId, 'site.sqlite'), uploadsPath: process.env.SITE_UPLOADS_PATH || resolve('data', siteConfig.siteId, 'uploads'), adminPassword: process.env.SITE_ADMIN_PASSWORD, sessionSecret: process.env.SITE_SESSION_SECRET, stripe: { secretKey: process.env.SITE_STRIPE_SECRET_KEY, webhookSecret: process.env.SITE_STRIPE_WEBHOOK_SECRET }, notifications: { enabled: process.env.SITE_NOTIFICATIONS_ENABLED === 'true', apiKey: process.env.RESEND_API_KEY, from: process.env.RESEND_FROM } })
+  const sourceConfig = JSON.parse(readFileSync(resolve(configPath), 'utf8'))
+  const siteConfig = parseConfig({ ...sourceConfig, ...(process.env.SITE_RUNTIME_MODE ? { mode: process.env.SITE_RUNTIME_MODE } : {}), commerce: { ...sourceConfig.commerce, ...(process.env.SITE_PAYMENT_MODE ? { paymentMode: process.env.SITE_PAYMENT_MODE } : {}) } })
+  const instance = await startSiteRuntime({ config: siteConfig, approvedDelivery: process.env.SITE_APPROVED_DELIVERY_PATH ? JSON.parse(readFileSync(resolve(process.env.SITE_APPROVED_DELIVERY_PATH), 'utf8')) : null, deploymentKey: process.env.SITE_DEPLOYMENT_KEY, durableStorage: process.env.SITE_STORAGE_DURABLE_CONFIRMED === 'true', origin: process.env.SITE_ORIGIN, port: Number(process.env.PORT || 3002), host: process.env.HOST || '127.0.0.1', databasePath: process.env.SITE_DATABASE_PATH || resolve('data', siteConfig.siteId, 'site.sqlite'), uploadsPath: process.env.SITE_UPLOADS_PATH || resolve('data', siteConfig.siteId, 'uploads'), adminPassword: process.env.SITE_ADMIN_PASSWORD, sessionSecret: process.env.SITE_SESSION_SECRET, stripe: { secretKey: process.env.SITE_STRIPE_SECRET_KEY, webhookSecret: process.env.SITE_STRIPE_WEBHOOK_SECRET }, notifications: { enabled: process.env.SITE_NOTIFICATIONS_ENABLED === 'true', apiKey: process.env.RESEND_API_KEY, from: process.env.RESEND_FROM } })
   console.log(`Customer site ready (${siteConfig.mode}); database and administrator credentials are isolated.`)
   for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => { void instance.stop() })
 }

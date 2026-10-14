@@ -1,11 +1,15 @@
+import { createTranslator, formatMoney as localizedMoney } from './locale.mjs';
 (() => {
+  const locale = document.documentElement.lang || 'zh-Hant';
+  const currency = document.body.dataset.currency || 'TWD';
+  const t = createTranslator(locale);
   const $ = (s, root = document) => root.querySelector(s);
   const $$ = (s, root = document) => [...root.querySelectorAll(s)];
   const say = (form, message) => {
     const node = $(".form-message", form);
     if (node) node.textContent = message;
   };
-  const cartKey = "customer-site-cart";
+  const cartKey = `customer-site-cart:${document.body.dataset.siteId || 'legacy'}:${currency}`;
   const getCart = () => {
     try {
       return JSON.parse(localStorage.getItem(cartKey) || "[]");
@@ -30,14 +34,14 @@
         ? items
             .map(
               (i, n) =>
-                `<div class="service-row"><div><h2>${escapeHtml(i.name)}</h2><p>${formatMoney(i.priceMinor)} × ${i.quantity}</p></div><button type="button" data-remove-cart="${n}" aria-label="移除 ${escapeHtml(i.name)}">移除</button></div>`
+                t`<div class="service-row"><div><h2>${escapeHtml(i.name)}</h2><p>${formatMoney(i.priceMinor)} × ${i.quantity}</p></div><button type="button" data-remove-cart="${n}" aria-label="移除 ${escapeHtml(i.name)}">移除</button></div>`
             )
             .join("")
-        : '<p class="empty-state">購物袋目前是空的，挑選幾件喜歡的商品吧。</p>';
+        : t('<p class="empty-state">購物袋目前是空的，挑選幾件喜歡的商品吧。</p>');
     const total = $("[data-cart-total]");
     if (total)
       total.textContent = items.length
-        ? `合計 · ${formatMoney(items.reduce((sum, i) => sum + i.priceMinor * i.quantity, 0))}`
+        ? t`合計 · ${formatMoney(items.reduce((sum, i) => sum + i.priceMinor * i.quantity, 0))}`
         : "";
   };
   const escapeHtml = s =>
@@ -52,17 +56,16 @@
           "'": "&#39;",
         })[c]
     );
-  const formatMoney = minor =>
-    `TWD ${new Intl.NumberFormat("zh-TW").format((Number(minor) || 0) / 100)}`;
-  const paymentLabel = status => ({ pending: "待確認付款", paid: "已付款", refunded: "已退款", review_required: "待商家對帳（暫停出貨）" })[status] || status || "未提供付款狀態";
-  const fulfillmentLabel = status => ({ unfulfilled: "待處理", processing: "處理中", shipped: "已出貨", delivered: "已送達", cancelled: "已取消" })[status] || status || "未提供出貨狀態";
-  const bookingLabel = status => ({ confirmed: "已確認", cancelled: "已取消", pending_hold: "等待商家確認", rejected: "未接受", expired: "已逾期" })[status] || status || "未提供狀態";
-  const localDate = (value, timeZone = "Asia/Taipei") => {
+  const formatMoney = minor => localizedMoney(minor, currency, locale);
+  const paymentLabel = status => ({ pending: t("待確認付款"), paid: t("已付款"), refunded: t("已退款"), review_required: t("待商家對帳（暫停出貨）") })[status] || status || t("未提供付款狀態");
+  const fulfillmentLabel = status => ({ unfulfilled: t("待處理"), processing: t("處理中"), shipped: t("已出貨"), delivered: t("已送達"), cancelled: t("已取消") })[status] || status || t("未提供出貨狀態");
+  const bookingLabel = status => ({ confirmed: t("已確認"), cancelled: t("已取消"), pending_hold: t("等待商家確認"), rejected: t("未接受"), expired: t("已逾期") })[status] || status || t("未提供狀態");
+  const localDate = (value, timeZone = document.body.dataset.timeZone || 'UTC') => {
     const date = new Date(value);
     if (!Number.isFinite(date.getTime())) return String(value || "");
     const options = { timeZone, month: "numeric", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
-    try { return new Intl.DateTimeFormat("zh-TW", options).format(date); }
-    catch { return new Intl.DateTimeFormat("zh-TW", { ...options, timeZone: "Asia/Taipei" }).format(date); }
+    try { return new Intl.DateTimeFormat(locale, options).format(date); }
+    catch { return new Intl.DateTimeFormat(locale, { ...options, timeZone: "UTC" }).format(date); }
   };
   const saveOrderToken = order => {
     if (!order?.id || !order.accessToken) return;
@@ -82,20 +85,20 @@
     } catch { /* keep the safe order receipt already returned by the authorized request */ }
     if (!host) return;
     const items = (detail.items || []).map(item => `<li>${escapeHtml(item.name)}${item.variantLabel ? ` · ${escapeHtml(item.variantLabel)}` : ""} × ${escapeHtml(item.quantity)}</li>`).join("");
-    const tracking = (detail.tracking || []).map(event => `<p>${escapeHtml(event.label)} · ${escapeHtml(event.createdAt)}${event.metadata?.carrier ? ` · ${escapeHtml(event.metadata.carrier)} ${escapeHtml(event.metadata.trackingNumber || "")}` : ""}</p>`).join("");
+    const tracking = (detail.tracking || []).map(event => `<p>${escapeHtml(t(event.label))} · ${escapeHtml(localDate(event.createdAt))}${event.metadata?.carrier ? ` · ${escapeHtml(event.metadata.carrier)} ${escapeHtml(event.metadata.trackingNumber || "")}` : ""}</p>`).join("");
     let card = $("[data-order-details]");
     if (!card) { card = document.createElement("section"); card.className = "order-receipt"; card.dataset.orderDetails = ""; host.insertAdjacentElement("afterend", card); }
-    card.innerHTML = `<h2>訂單 ${escapeHtml(detail.number || "")}</h2><p>${escapeHtml(paymentLabel(detail.paymentStatus))} · ${escapeHtml(fulfillmentLabel(detail.fulfillmentStatus))}</p><p>合計 ${formatMoney(detail.totalMinor || 0)}</p><ul>${items}</ul>${tracking || "<p>目前尚無物流更新。</p>"}`;
+    card.innerHTML = t`<h2>訂單 ${escapeHtml(detail.number || "")}</h2><p>${escapeHtml(paymentLabel(detail.paymentStatus))} · ${escapeHtml(fulfillmentLabel(detail.fulfillmentStatus))}</p><p>合計 ${formatMoney(detail.totalMinor || 0)}</p><ul>${items}</ul>${tracking || t("<p>目前尚無物流更新。</p>")}`;
     if (accessToken && ["stripe_test", "stripe_live"].includes(detail.paymentMode) && detail.paymentStatus === "pending" && detail.fulfillmentStatus === "unfulfilled") {
       const button = document.createElement("button"); button.type = "button"; button.className = "button";
-      button.textContent = detail.paymentMode === "stripe_test" ? "前往 Stripe 測試付款（不扣真錢）" : "前往 Stripe 安全付款";
+      button.textContent = detail.paymentMode === "stripe_test" ? t("前往 Stripe 測試付款（不扣真錢）") : t("前往 Stripe 安全付款");
       const message = document.createElement("p"); message.setAttribute("aria-live", "polite");
       button.addEventListener("click", async () => {
         button.disabled = true;
         try {
           const result = await api(`/api/orders/${encodeURIComponent(detail.id)}/checkout`, { method: "POST", body: {}, headers: { "x-order-token": accessToken } });
           const target = new URL(result.url);
-          if (target.origin !== "https://checkout.stripe.com" || target.username || target.password) throw new Error("付款網址驗證失敗，請聯絡商家。");
+          if (target.origin !== "https://checkout.stripe.com" || target.username || target.password) throw new Error(t("付款網址驗證失敗，請聯絡商家。"));
           location.assign(target.href);
         } catch (error) { message.textContent = error.message; button.disabled = false; }
       });
@@ -106,7 +109,7 @@
     const row = document.createElement("div");
     row.className = "variant-row";
     row.innerHTML =
-      '<input type="hidden" data-variant-id><input data-variant-label placeholder="規格名稱" aria-label="規格名稱" required><input type="number" data-variant-price placeholder="價格（最小貨幣單位）" aria-label="價格（最小貨幣單位）" min="1" required><input type="number" data-variant-stock placeholder="庫存" aria-label="庫存" min="0" required><button type="button" data-remove-variant aria-label="移除規格">移除規格</button>';
+      t('<input type="hidden" data-variant-id><input data-variant-label placeholder="規格名稱" aria-label="規格名稱" required><input type="number" data-variant-price placeholder="價格（最小貨幣單位）" aria-label="價格（最小貨幣單位）" min="1" required><input type="number" data-variant-stock placeholder="庫存" aria-label="庫存" min="0" required><button type="button" data-remove-variant aria-label="移除規格">移除規格</button>');
     row.querySelector("[data-variant-id]").value = value.id || "";
     row.querySelector("[data-variant-label]").value = value.label || "";
     row.querySelector("[data-variant-price]").value = value.priceMinor ?? "";
@@ -144,7 +147,7 @@
     const data = await response.json().catch(() => ({}));
     if (!response.ok)
       throw new Error(
-        data.message || data.error || `請求失敗（${response.status}）。請稍後再試。`
+        data.message || data.error || t`請求失敗（${response.status}）。請稍後再試。`
       );
     return data;
   };
@@ -169,7 +172,7 @@
     const nav = $(".site-header nav");
     const open = nav?.classList.toggle("is-open");
     menuButton.setAttribute("aria-expanded", String(Boolean(open)));
-    menuButton.setAttribute("aria-label", open ? "關閉選單" : "開啟選單");
+    menuButton.setAttribute("aria-label", open ? t("關閉選單") : t("開啟選單"));
   });
   document.addEventListener("click", async event => {
     const editProduct = event.target.closest("[data-edit-product]");
@@ -287,7 +290,7 @@
         });
       setCart(items);
       const msg = $(".form-message");
-      if (msg) msg.textContent = "已加入購物袋。";
+      if (msg) msg.textContent = t("已加入購物袋。");
     }
     const remove = event.target.closest("[data-remove-cart]");
     if (remove) {
@@ -298,7 +301,7 @@
     const publish = event.target.closest("[data-publish-post]");
     if (publish) {
       const action =
-        publish.textContent.trim() === "發布" ? "publish" : "unpublish";
+        publish.textContent.trim() === t("發布") ? "publish" : "unpublish";
       try {
         await api(
           `/api/admin/blog/${encodeURIComponent(publish.dataset.publishPost)}/${action}`,
@@ -316,12 +319,12 @@
     const action = orderAction.value;
     const body = { action };
     if (action === "ship") {
-      body.carrier = prompt("請輸入物流業者");
-      body.trackingNumber = prompt("請輸入物流追蹤編號");
+      body.carrier = prompt(t("請輸入物流業者"));
+      body.trackingNumber = prompt(t("請輸入物流追蹤編號"));
       if (!body.carrier || !body.trackingNumber) { orderAction.value = ""; return; }
     }
     if (action === "refund") {
-      body.reference = prompt("請輸入退款參考編號");
+      body.reference = prompt(t("請輸入退款參考編號"));
       if (!body.reference) { orderAction.value = ""; return; }
     }
     orderAction.disabled = true;
@@ -346,15 +349,15 @@
         const revisions = result.revisions || [];
         if (!revisions.length) {
           const m = $("[data-admin-message]");
-          if (m) m.textContent = "目前沒有修訂記錄。";
+          if (m) m.textContent = t("目前沒有修訂記錄。");
           return;
         }
         const choice = prompt(
-          `輸入要還原的修訂編號（取消以離開）：\n${revisions.map((r, i) => `${i + 1}. ${r.status} · ${r.version} · ${r.createdAt}`).join("\n")}`
+          t`輸入要還原的修訂編號（取消以離開）：\n${revisions.map((r, i) => `${i + 1}. ${r.status} · ${r.version} · ${r.createdAt}`).join("\n")}`
         );
         if (choice === null) return;
         const revision = revisions[Number(choice) - 1];
-        if (!revision || !confirm(`要將「${revision.title}」還原為草稿嗎？`))
+        if (!revision || !confirm(t`要將「${revision.title}」還原為草稿嗎？`))
           return;
         await api(`/api/admin/blog/${encodeURIComponent(id)}/restore`, {
           method: "POST",
@@ -403,10 +406,10 @@
         )
         .join("");
       if (!available.length)
-        slotPicker.innerHTML = '<option value="">目前沒有可預約時段</option>';
+        slotPicker.innerHTML = t('<option value="">目前沒有可預約時段</option>');
     } catch (error) {
       slotPicker.innerHTML =
-        '<option value="">時段載入失敗，請稍後重試</option>';
+        t('<option value="">時段載入失敗，請稍後重試</option>');
     } finally {
       slotPicker.disabled = false;
     }
@@ -432,7 +435,7 @@
   });
   submit($("[data-register-form]"), async data => {
     data.consent = data.consent === "true";
-    if (!data.consent) throw new Error("請先同意隱私說明。");
+    if (!data.consent) throw new Error(t("請先同意隱私說明。"));
     const result = await api("/api/auth/register", {
       method: "POST",
       body: data,
@@ -456,25 +459,25 @@
   });
   submit($('[data-password-reset-request]'), async (data, form) => {
     await api('/api/auth/password-reset/request', { method: 'POST', body: data });
-    say(form, '若此電子郵件已有帳號，重設連結將寄送至該信箱。');
+    say(form, t('若此電子郵件已有帳號，重設連結將寄送至該信箱。'));
   });
   submit($('[data-password-reset-confirm]'), async (data, form) => {
-    if (!actionToken) throw new Error('重設連結已失效，請重新申請。');
+    if (!actionToken) throw new Error(t('重設連結已失效，請重新申請。'));
     await api('/api/auth/password-reset/confirm', { method: 'POST', body: { token: actionToken, password: data.password } });
     actionToken = '';
     form.reset();
-    say(form, '密碼已更新，請使用新密碼登入。');
+    say(form, t('密碼已更新，請使用新密碼登入。'));
   });
   const verifyStatus = $('[data-email-verification-status]');
   if (verifyStatus) {
-    if (!actionToken) verifyStatus.textContent = '驗證連結已失效，請重新登入後申請新的驗證信。';
+    if (!actionToken) verifyStatus.textContent = t('驗證連結已失效，請重新登入後申請新的驗證信。');
     else api('/api/auth/email/confirm', { method: 'POST', body: { token: actionToken } })
-      .then(() => { actionToken = ''; verifyStatus.textContent = '電子郵件已驗證，謝謝你。'; })
+      .then(() => { actionToken = ''; verifyStatus.textContent = t('電子郵件已驗證，謝謝你。'); })
       .catch(error => { verifyStatus.textContent = error.message; });
   }
   $('[data-email-verification-request]')?.addEventListener('click', async event => {
     const button = event.currentTarget; button.disabled = true;
-    try { await api('/api/auth/email/request', { method: 'POST', body: {} }); $('[data-verification-message]').textContent = '若帳號仍需驗證，驗證連結將寄送至會員信箱。'; }
+    try { await api('/api/auth/email/request', { method: 'POST', body: {} }); $('[data-verification-message]').textContent = t('若帳號仍需驗證，驗證連結將寄送至會員信箱。'); }
     catch (error) { $('[data-verification-message]').textContent = error.message; }
     finally { button.disabled = false; }
   });
@@ -485,7 +488,7 @@
     const guest = Boolean(data.name);
     if (guest) {
       data.consent = data.consent === "true";
-      if (!data.consent) throw new Error("請先同意聯絡資料使用說明。");
+      if (!data.consent) throw new Error(t("請先同意聯絡資料使用說明。"));
     }
     const result = await api(
       guest ? "/api/booking-requests" : "/api/bookings",
@@ -494,7 +497,7 @@
     sessionStorage.removeItem(idempotencyName);
     if (guest && result.accessToken) {
       const link = document.createElement("a"); link.className = "button";
-      link.textContent = "查看、取消或申請改期（請保留私人連結）";
+      link.textContent = t("查看、取消或申請改期（請保留私人連結）");
       link.href = `/booking#id=${encodeURIComponent(result.id)}&token=${encodeURIComponent(result.accessToken)}`;
       form.insertAdjacentElement("afterend", link);
     }
@@ -502,15 +505,15 @@
       form,
       result.message ||
         (guest
-          ? `已收到預約申請，商家確認前尚未完成預約或付款。${result.notification?.configured ? "" : "目前未開啟 Email 通知，請保留下方私人連結查詢。"}`
-          : "預約已送出。")
+          ? t`已收到預約申請，商家確認前尚未完成預約或付款。${result.notification?.configured ? "" : t("目前未開啟 Email 通知，請保留下方私人連結查詢。")}`
+          : t("預約已送出。"))
     );
   });
   submit($("[data-checkout-form]"), async (data, form) => {
     const items = getCart();
-    if (!items.length) throw new Error("購物袋目前是空的。");
+    if (!items.length) throw new Error(t("購物袋目前是空的。"));
     if (!data.consent)
-      throw new Error("請先勾選同意購物條款與隱私說明。");
+      throw new Error(t("請先勾選同意購物條款與隱私說明。"));
     const keyName = "ds-order-idempotency";
     let idempotencyKey = sessionStorage.getItem(keyName);
     if (!idempotencyKey) {
@@ -540,12 +543,12 @@
     setCart([]);
     say(
       form,
-      `已收到訂單 ${result.number || ""}。目前尚未收款。`
+      t`已收到訂單 ${result.number || ""}。目前尚未收款。`
     );
     await showOrder(result, form);
     form.hidden = true;
     const heading = document.querySelector("main h1");
-    if (heading) heading.textContent = "訂單已建立";
+    if (heading) heading.textContent = t("訂單已建立");
     const receipt = $("[data-order-details]");
     if (receipt) { receipt.tabIndex = -1; receipt.focus(); }
   });
@@ -556,16 +559,16 @@
     });
     say(
       form,
-      `已找到訂單 ${result.number || ""}。`
+      t`已找到訂單 ${result.number || ""}。`
     );
     await showOrder(result, form);
   });
   submit($("[data-contact-form]"), async (data, form) => {
     data.consent = data.consent === "true";
-    if (!data.consent) throw new Error("請先同意聯絡資料使用說明。");
+    if (!data.consent) throw new Error(t("請先同意聯絡資料使用說明。"));
     await api("/api/contact", { method: "POST", body: data });
     form.reset();
-    say(form, "訊息已送出，謝謝您。");
+    say(form, t("訊息已送出，謝謝您。"));
   });
   submit($("[data-admin-product]"), async data => {
     if (!data.id) delete data.id;
@@ -620,6 +623,12 @@
     await api("/api/admin/blog", { method: "POST", body: data });
     location.reload();
   });
+  submit($("[data-stripe-test-form]"), async (data, form) => {
+    try {
+      await api('/api/admin/stripe-test', { method: 'POST', body: { secretKey: data.secretKey, webhookSecret: data.webhookSecret } });
+      say(form, t('測試金鑰已加密儲存。尚未執行付款驗收。'));
+    } finally { form.reset(); data.secretKey = ''; data.webhookSecret = ''; }
+  });
   submit($("[data-admin-settings]"), async data => {
     const body = {
       preset: data.preset,
@@ -650,7 +659,7 @@
       const file = input.files?.[0];
       if (!file) return;
       const message = $("[data-admin-message]");
-      if (message) message.textContent = "圖片上傳中…";
+      if (message) message.textContent = t("圖片上傳中…");
       try {
         const s = await session();
         const response = await fetch("/api/admin/media", {
@@ -665,7 +674,7 @@
         const result = await response.json().catch(() => ({}));
         if (!response.ok)
           throw new Error(
-            result.message || result.error || "圖片上傳失敗。"
+            result.message || result.error || t("圖片上傳失敗。")
           );
         const field = input
           .closest(".admin-panel")
@@ -692,7 +701,7 @@
                   `<article class="contact-message"><p class="eyebrow">${escapeHtml(m.createdAt || "")}</p><h3>${escapeHtml(m.name)} · ${escapeHtml(m.email)}</h3><p>${escapeHtml(m.message)}</p></article>`
               )
               .join("")
-          : "目前沒有聯絡訊息。";
+          : t("目前沒有聯絡訊息。");
       })
       .catch(error => {
         messageHost.textContent = error.message;
@@ -704,14 +713,14 @@
         const bookings = (data.bookings || [])
           .map(
             b =>
-              `<div class="service-row"><div><h2>${escapeHtml(b.serviceName || "預約服務")}</h2><p>${escapeHtml(localDate(b.startsAt))}</p></div><span>${escapeHtml(bookingLabel(b.status))}</span></div>`
+              `<div class="service-row"><div><h2>${escapeHtml(b.serviceName || t("預約服務"))}</h2><p>${escapeHtml(localDate(b.startsAt))}</p></div><span>${escapeHtml(bookingLabel(b.status))}</span></div>`
           )
           .join("");
         const orders = (data.orders || [])
-          .map(o => `<article class="order-receipt"><h2>訂單 ${escapeHtml(o.number || "")}</h2><p>${escapeHtml(paymentLabel(o.paymentStatus))} · ${escapeHtml(fulfillmentLabel(o.fulfillmentStatus))}</p><ul>${(o.items || []).map(item => `<li>${escapeHtml(item.name)}${item.variantLabel ? ` · ${escapeHtml(item.variantLabel)}` : ""} × ${escapeHtml(item.quantity)}</li>`).join("")}</ul><p>合計 ${formatMoney(o.totalMinor || 0)}</p>${(o.tracking || []).map(event => `<p>${escapeHtml(event.label || "物流更新")} · ${escapeHtml(event.createdAt || "")}${event.metadata?.carrier ? ` · ${escapeHtml(event.metadata.carrier)} ${escapeHtml(event.metadata.trackingNumber || "")}` : ""}</p>`).join("")}</article>`)
+          .map(o => t`<article class="order-receipt"><h2>訂單 ${escapeHtml(o.number || "")}</h2><p>${escapeHtml(paymentLabel(o.paymentStatus))} · ${escapeHtml(fulfillmentLabel(o.fulfillmentStatus))}</p><ul>${(o.items || []).map(item => `<li>${escapeHtml(item.name)}${item.variantLabel ? ` · ${escapeHtml(item.variantLabel)}` : ""} × ${escapeHtml(item.quantity)}</li>`).join("")}</ul><p>合計 ${formatMoney(o.totalMinor || 0)}</p>${(o.tracking || []).map(event => `<p>${escapeHtml(t(event.label || "物流更新"))} · ${escapeHtml(localDate(event.createdAt || ""))}${event.metadata?.carrier ? ` · ${escapeHtml(event.metadata.carrier)} ${escapeHtml(event.metadata.trackingNumber || "")}` : ""}</p>`).join("")}</article>`)
           .join("");
         const isCommerce = data.siteType === "commerce";
-        accountHost.innerHTML = `${isCommerce ? `<section><h2>我的訂單</h2>${data.emailVerificationRequired ? '<p class="empty-state">完成電子郵件驗證後即可查看會員訂單。</p>' : orders || '<p class="empty-state">目前沒有訂單。</p>'}</section>` : `<section class="account-summary"><h2>可用堂數</h2><p>${escapeHtml(data.balance?.balance ?? data.balance ?? 0)} 堂</p></section><section><h2>我的預約</h2>${bookings || '<p class="empty-state">目前沒有預約。</p>'}</section>`}<form data-logout-form><button class="button button-small">登出</button><p class="form-message" aria-live="polite"></p></form>`;
+        accountHost.innerHTML = t`${isCommerce ? t`<section><h2>我的訂單</h2>${data.emailVerificationRequired ? t('<p class="empty-state">完成電子郵件驗證後即可查看會員訂單。</p>') : orders || t('<p class="empty-state">目前沒有訂單。</p>')}</section>` : t`<section class="account-summary"><h2>可用堂數</h2><p>${escapeHtml(data.balance?.balance ?? data.balance ?? 0)} 堂</p></section><section><h2>我的預約</h2>${bookings || t('<p class="empty-state">目前沒有預約。</p>')}</section>`}<form data-logout-form><button class="button button-small">登出</button><p class="form-message" aria-live="polite"></p></form>`;
         submit($("[data-logout-form]"), async (_, form) => {
           await api("/api/auth/logout", { method: "POST", body: {} });
           sessionPromise = undefined;
@@ -726,7 +735,7 @@
       data.delta = Number(data.delta);
       data.idempotencyKey = crypto.randomUUID();
       await api("/api/admin/credits", { method: "POST", body: data });
-          say(node, "堂數已更新。");
+          say(node, t("堂數已更新。"));
     })
   );
   $$("[data-confirm-guest], [data-reject-guest]").forEach(button =>
@@ -757,7 +766,7 @@
     const headers = { "x-booking-token": token || "" };
     const load = async () => {
       try {
-        if (!valid) throw new Error("請使用建立預約時取得的完整私人連結。");
+        if (!valid) throw new Error(t("請使用建立預約時取得的完整私人連結。"));
         current = await api(`/api/booking-requests/${encodeURIComponent(id)}`, { headers });
         $("[data-booking-summary]", guestHost).textContent = `${current.serviceName} · ${localDate(current.startsAt, guestHost.dataset.timeZone)} · ${bookingLabel(current.status)}`;
         const changeable = ["confirmed", "pending_hold"].includes(current.status);
@@ -773,10 +782,10 @@
     $("[data-booking-refresh]", guestHost).addEventListener("click", load);
     submit($("[data-guest-reschedule]", guestHost), async (data, form) => {
       await api(`/api/booking-requests/${encodeURIComponent(id)}`, { method: "PATCH", headers, body: { action: "reschedule", slotId: data.slotId, version: current.version } });
-      say(form, "改期申請已送出，等待商家重新確認。"); await load();
+      say(form, t("改期申請已送出，等待商家重新確認。")); await load();
     });
     $("[data-guest-cancel]", guestHost).addEventListener("click", async event => {
-      if (!confirm("確定取消此預約？若已付款，退款請洽商家。")) return;
+      if (!confirm(t("確定取消此預約？若已付款，退款請洽商家。"))) return;
       const button = event.currentTarget; button.disabled = true;
       try { await api(`/api/booking-requests/${encodeURIComponent(id)}`, { method: "PATCH", headers, body: { action: "cancel", version: current.version } }); await load(); }
       catch (error) { say(guestHost, error.message); }

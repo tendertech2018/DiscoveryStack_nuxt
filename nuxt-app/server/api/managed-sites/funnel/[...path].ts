@@ -23,6 +23,7 @@ import { analyseStudioReference } from '../../../managed-sites/funnel/studio-ref
 import { clearlyUnrelatedStudioRequest } from '../../../../utils/managedSiteGuided'
 import { reviseStudioDesign } from '../../../managed-sites/funnel/studio-design-service'
 import { assertStudioProviderRequirement } from '../../../llm-provider/website-studio'
+import { prepareFunnelRuntime, publishFunnelRuntime, funnelRuntimeStatus, restoreFunnelRuntimePackage } from '../../../managed-sites/funnel/runtime-delivery'
 
 const funnelPrefix = '/api/managed-sites/funnel'
 const privateHeaders = { 'cache-control': 'private, no-store, max-age=0', 'x-robots-tag': 'noindex, nofollow, noarchive', 'referrer-policy': 'no-referrer' }
@@ -176,6 +177,8 @@ export default defineEventHandler(async event => {
   const sessionId = parsePathId(segments[1], 'Managed-site funnel session id')
   const sessionToken = String(getHeader(event, 'x-managed-site-funnel-token') || '')
   const authenticatedSession = await loadFunnelSession(sessionId, sessionToken, repository)
+  const nativeState = (authenticatedSession.answers as FunnelAnswers)?.runtimeDelivery
+  if (method !== 'GET' && (nativeState?.publishing || nativeState?.publication) && !['runtime-publish'].includes(segments[2] || '')) throw createError({ statusCode: 409, statusMessage: 'RUNTIME_RELEASE_LOCKED', data: { code: 'RUNTIME_RELEASE_LOCKED' } })
   if (method === 'POST' && ['studio-intake', 'studio-preview'].includes(segments[2] || '')) assertStudioProviderRequirement(getHeader(event, 'x-managed-site-required-provider'))
 
   if (segments.length === 2) {
@@ -335,6 +338,24 @@ export default defineEventHandler(async event => {
     assertSameOriginManagedSiteMutation(event); checkRateLimit(event, sessionId)
     const body = await strictFunnelBody(event, ['proposalId', 'preset'])
     return sessionProjection(await confirmStudioProposal(authenticatedSession, { proposalId: body.proposalId, preset: body.preset }, repository))
+  }
+
+  if (segments.length === 3 && segments[2] === 'runtime-export') {
+    if (method !== 'GET') throw createError({ statusCode: 405, statusMessage: 'Method not allowed.' })
+    checkRateLimit(event, sessionId)
+    return restoreFunnelRuntimePackage(authenticatedSession)
+  }
+  if (segments.length === 3 && segments[2] === 'runtime-package') {
+    if (method === 'GET') return funnelRuntimeStatus(authenticatedSession)
+    if (method !== 'POST') throw createError({ statusCode: 405, statusMessage: 'Method not allowed.' })
+    assertSameOriginManagedSiteMutation(event); checkRateLimit(event, sessionId)
+    return prepareFunnelRuntime(authenticatedSession, await strictFunnelBody(event, ['engine', 'currency', 'timeZone']), repository)
+  }
+  if (segments.length === 3 && segments[2] === 'runtime-publish') {
+    if (method !== 'POST') throw createError({ statusCode: 405, statusMessage: 'Method not allowed.' })
+    assertSameOriginManagedSiteMutation(event); checkRateLimit(event, sessionId)
+    const body = await strictFunnelBody(event, ['packageFingerprint'])
+    return publishFunnelRuntime(authenticatedSession, body.packageFingerprint, repository)
   }
 
   if (segments.length === 3 && segments[2] === 'build') {

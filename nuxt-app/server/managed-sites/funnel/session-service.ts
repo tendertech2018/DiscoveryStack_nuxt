@@ -23,6 +23,7 @@ type ExistingSiteSnapshot = {
 }
 
 export type FunnelAnswers = {
+  runtimeDelivery?: import('./runtime-delivery').RuntimeDeliveryState
   studio?: FunnelStudioState
   studioIntake?: StudioIntakeState
   existingSite?: {

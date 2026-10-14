@@ -18,6 +18,10 @@
 [hidden] {
   display: none !important;
 }
+/* Logical layout keeps checkout and booking usable in right-to-left languages. */
+html[dir="rtl"] .header-tools,html[dir="rtl"] .footer-links{direction:rtl}
+html[dir="rtl"] input[type="email"],html[dir="rtl"] input[type="tel"],html[dir="rtl"] input[type="password"],html[dir="rtl"] code{direction:ltr;text-align:start}
+html[dir="rtl"] .form-panel,html[dir="rtl"] .detail-copy,html[dir="rtl"] .page-intro{text-align:start}
 .order-receipt {
   width: min(680px, calc(100% - 40px));
   margin: 32px auto 88px;
@@ -248,7 +252,7 @@ main {
   padding: 0 28px;
   border: 1px solid var(--accent);
   background: var(--accent);
-  color: #fffaf4;
+  color: var(--button-ink, #fffaf4);
   text-transform: uppercase;
   letter-spacing: 0.13em;
   font-size: 10px;
@@ -260,6 +264,7 @@ main {
 .button:hover {
   transform: translateY(-2px);
   background: var(--ink);
+  color: var(--paper);
 }
 .button-small {
   min-height: 39px;
@@ -842,6 +847,7 @@ select:focus-visible {
     animation: none !important;
   }
 }
+.motion-none *, .motion-none *::before, .motion-none *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 .stock-note,
 .form-note {
   display: block;
