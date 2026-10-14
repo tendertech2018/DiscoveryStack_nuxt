@@ -5,6 +5,8 @@ COPY --chown=node:node server.mjs package.json ./
 COPY --chown=node:node lib ./lib
 COPY --chown=node:node public ./public
 COPY --chown=node:node site.config.json ./site.config.json
+COPY --chown=node:node approved-delivery.json ./approved-delivery.json
+ENV SITE_APPROVED_DELIVERY_PATH=/app/approved-delivery.json
 USER node
 EXPOSE 3002
 CMD ["node", "server.mjs"]

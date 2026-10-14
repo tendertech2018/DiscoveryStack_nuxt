@@ -11,16 +11,16 @@ function signed(event, time = Date.now()) {
   const raw = Buffer.from(JSON.stringify(event)), timestamp = Math.floor(time / 1000)
   return [raw, `t=${timestamp},v1=${createHmac('sha256', signing).update(`${timestamp}.`).update(raw).digest('hex')}`]
 }
-function fixture(t, extra = {}) {
+function fixture(t, extra = {}, currency = 'TWD') {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close())
-  const config = parseConfig({ siteId: 'stripe-fixture', siteType: 'commerce', brandName: 'Synthetic store', mode: 'preview', commerce: { paymentMode: 'stripe_test' } })
+  const config = parseConfig({ siteId: 'stripe-fixture', siteType: 'commerce', brandName: 'Synthetic store', mode: 'preview', currency, commerce: { paymentMode: 'stripe_test' } })
   const commerce = createCommerce(db, config)
   const item = commerce.saveProduct({ name: 'Fixture', slug: 'fixture', category: 'fixture', description: 'Synthetic only', priceMinor: 10000, stock: 4, active: true, images: [] })
   const order = commerce.createOrder({ customer: { name: 'Synthetic', email: 'fixture@example.invalid', phone: '0900000000', address: 'Synthetic address' }, items: [{ productId: item.id, quantity: 1 }], consent: true, idempotencyKey: 'stripe-fixture-order' })
   const calls = []
   const payments = createStripePayments(db, commerce, config, { secretKey: 'sk_test_fixtureOnlyNotReal0000', webhookSecret: signing, origin: 'https://fixture.example', fetchImpl: async (url, options) => {
     const form = new URLSearchParams(options.body); calls.push({ url, options, form })
-    return Response.json({ object: 'checkout.session', id: 'cs_test_fixture', url: 'https://checkout.stripe.com/c/pay/cs_test_fixture', client_reference_id: order.id, metadata: { siteId: config.siteId, attemptId: form.get('metadata[attemptId]') }, amount_total: order.totalMinor, currency: 'twd', mode: 'payment', livemode: false })
+    return Response.json({ object: 'checkout.session', id: 'cs_test_fixture', url: 'https://checkout.stripe.com/c/pay/cs_test_fixture', client_reference_id: order.id, metadata: { siteId: config.siteId, attemptId: form.get('metadata[attemptId]') }, amount_total: order.totalMinor, currency: currency.toLowerCase(), mode: 'payment', livemode: false })
   }, ...extra })
   const event = (overrides = {}, type = 'checkout.session.completed', eventId = 'evt_fixture') => ({ id: eventId, type, livemode: false, data: { object: { object: 'checkout.session', id: 'cs_test_fixture', status: 'complete', payment_status: 'paid', payment_intent: 'pi_fixture', mode: 'payment', livemode: false, amount_total: order.totalMinor, currency: 'twd', client_reference_id: order.id, metadata: { siteId: config.siteId, attemptId: db.prepare('SELECT attempt_id FROM stripe_checkouts').get()?.attempt_id }, ...overrides } } })
   return { db, commerce, item, order, payments, calls, event }
@@ -39,6 +39,13 @@ test('checkout owns amount, URL and idempotency; redirects never confirm payment
   assert.equal(f.calls[0].options.redirect, 'error')
   assert.equal(f.commerce.getOrder(f.order.id, f.order.accessToken).paymentStatus, 'pending')
   assert.throws(() => f.commerce.transitionOrder(f.order.id, { action: 'confirm_manual_payment', reference: 'fake' }))
+})
+for (const currency of ['JPY', 'USD', 'EUR', 'KRW']) test(`Stripe receives server-owned integer charge units for ${currency}`, async t => {
+  const f = fixture(t, {}, currency)
+  await f.payments.checkout(f.order.id, f.order.accessToken)
+  assert.equal(f.calls[0].form.get('line_items[0][price_data][currency]'), currency.toLowerCase())
+  assert.equal(f.calls[0].form.get('line_items[0][price_data][unit_amount]'), String(f.order.totalMinor))
+  assert.equal(f.order.currency, currency)
 })
 
 test('signed payment is atomic, replay-safe, tenant-bound and cannot be manually refunded', async t => {

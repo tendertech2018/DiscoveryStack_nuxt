@@ -107,7 +107,8 @@ onBeforeUnmount(() => { alive = false; clearInterval(timer) })
   <section class="launch-panel" :lang="language" :dir="siteTextDirection(language)" :aria-busy="busy">
     <ol class="journey"><li>✓ {{ t('idea') }}</li><li>✓ {{ t('review') }}</li><li aria-current="step">03 {{ t('launch') }}</li></ol>
     <header><p class="eyebrow">{{ session.answers.company?.brandName }}</p><h1>{{ t('title') }}</h1><p>{{ t('preserved') }}</p><button type="button" class="text" :disabled="busy || locked" @click="emit('back')">← {{ t('back') }}</button></header>
-    <section v-if="unactivatedModules.length" class="notice" role="status"><h2>{{ t('functions') }}</h2><p>{{ t('functionBlock') }}</p><ul><li v-for="module in unactivatedModules" :key="module">{{ launchQuoteLabel({ lineKey: `module-${module}`, description: module, lineAmountMinor: 0, billing: 'one_time' }, language) }}</li></ul></section>
+    <StudioRuntimeDelivery v-if="!locked && unactivatedModules.some(module => ['shopify_commerce', 'google_booking_assisted_integration'].includes(module))" :request="request" :language="language" :goal="session.answers.company?.conversionGoals?.[0]" />
+    <details v-if="unactivatedModules.length" class="notice"><summary>{{ t('functions') }}</summary><p>{{ t('functionBlock') }}</p><ul><li v-for="module in unactivatedModules" :key="module">{{ launchQuoteLabel({ lineKey: `module-${module}`, description: module, lineAmountMinor: 0, billing: 'one_time' }, language) }}</li></ul></details>
     <form v-if="!locked && !unactivatedModules.length" @submit.prevent="prepare">
       <fieldset :disabled="busy">
         <section class="card"><h2><span>01</span> {{ t('contact') }}</h2><div class="fields"><label>{{ t('name') }}<input v-model.trim="contact.contactName" required autocomplete="name" maxlength="120"></label><label>{{ t('email') }}<input v-model.trim="contact.email" type="email" required autocomplete="email" maxlength="320"></label></div></section>

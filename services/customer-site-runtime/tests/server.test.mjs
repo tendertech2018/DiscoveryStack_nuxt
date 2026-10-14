@@ -40,6 +40,28 @@ test('Stripe webhook is signature-only; missing configuration blocks inventory r
     assert.equal((await call(ready, '/api/admin/settings')).statusCode, 401)
   } finally { ready.close() }
 })
+test('merchant test-key form is administrator-only, CSRF protected and never returns secrets', async () => {
+  const r = createSiteRuntime({ config: { siteId: 'secret-http', siteType: 'commerce', mode: 'preview', locale: 'en', brandName: 'Synthetic', commerce: { paymentMode: 'disabled' } }, origin, adminPassword: 'synthetic-admin-password', sessionSecret: 'synthetic-encryption-secret-long-enough-000' })
+  try {
+    const s = await session(r)
+    const body = { secretKey: 'sk_test_syntheticNotReal000000', webhookSecret: 'whsec_syntheticNotReal000000' }
+    assert.equal((await call(r, '/api/admin/stripe-test', { ...s, method: 'POST', body })).statusCode, 401)
+    const login = await call(r, '/api/admin/login', { ...s, method: 'POST', body: { password: 'synthetic-admin-password' } })
+    const a = { cookie: login.headers['set-cookie'].split(';')[0], csrf: login.json.csrfToken }
+    assert.equal((await call(r, '/api/admin/stripe-test', { cookie: a.cookie, method: 'POST', body })).statusCode, 403)
+    const saved = await call(r, '/api/admin/stripe-test', { ...a, method: 'POST', body })
+    assert.equal(saved.statusCode, 200)
+    assert.deepEqual(saved.json, { configured: true, mode: 'test', verified: false })
+    const settings = await call(r, '/api/admin/settings', a)
+    assert.ok(!settings.data.includes(body.secretKey)); assert.ok(!settings.data.includes(body.webhookSecret))
+    const page = await call(r, '/admin', a)
+    assert.match(page.data, /data-stripe-test-form/)
+    assert.match(page.data, /name="secretKey" type="password"/)
+    assert.ok(!page.data.includes(body.secretKey))
+    assert.equal((await call(r, '/api/admin/stripe-test', a)).statusCode, 404)
+    assert.equal((await call(r, '/assets/customer-languages.mjs')).statusCode, 200)
+  } finally { r.close() }
+})
 test('guest booking receipt supports private lookup and CSRF-protected cancellation without login', async () => {
   const r = fixture('booking_blog')
   try {

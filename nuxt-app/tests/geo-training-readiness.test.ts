@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { ModuleKind, ScriptTarget, transpileModule } from 'typescript'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import * as constants from '../server/geo-outcome-model/constants'
 import { getWorkspace } from '../server/geo-outcome-model/service'
 import { createMemoryGeoOutcomeRepository } from './support/geo-outcome-memory-repository'
@@ -22,6 +22,11 @@ function component(stage: 'development' | 'shadow') {
 }
 
 describe('plain-language governed training readiness', () => {
+  let approvedFixture: Awaited<ReturnType<typeof trustedState>>
+  // Building and approving 1,000 synthetic observations is fixture setup, not
+  // the readiness query under test. Keep its bounded budget separate on CI.
+  beforeAll(async () => { approvedFixture = await trustedState() }, 30_000)
+
   it('keeps unconfirmed counts unknown instead of inventing completed progress', async () => {
     const html = await renderToString(vue.createSSRApp(component('development'), { workspace: {} }))
     expect(html).toContain('尚無可確認數字')
@@ -40,7 +45,7 @@ describe('plain-language governed training readiness', () => {
     expect(source).not.toContain('$fetch')
   })
   it('uses eligible dataset member dates, not unrelated old observations, for the training span', async () => {
-    const state = await trustedState()
+    const state = structuredClone(approvedFixture)
     const baseline = await getWorkspace(42, createMemoryGeoOutcomeRepository(state))
     const extra = { ...state.observations[0]!, runTimestamp: '2000-01-01T00:00:00Z', observationFingerprint: 'f'.repeat(64), verificationStatus: 'unverified' as const }
     state.observations.push(extra)

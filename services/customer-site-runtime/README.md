@@ -31,7 +31,25 @@ Resend 必須先有經驗證的寄件網域、有效 API key 與 `RESEND_FROM`�
 
 反向代理必須保留原始 Host，並使用配置的完整 canonical origin；本版本不信任任何 forwarded IP header。代理後的防濫用可在入口按真實 IP 做限制；應用內 remoteAddress 限流可能對同個 proxy 共用額度。勿直接公開 HTTP、管理預览或啟用真實付款。
 
-正式部署之前還需驗證 HTTPS／網域、cookie、跨客戶隔離、備份與還原、寄信、實際付款／退款、人工營運流程、手機排版。当前 Cloudflare Pages 靜態發布不能部署本 Node 核心；DS manifest 回報 `runtime_deployment_adapter_required`，不偽造 live release。需提供隔離 Node 託管能力後再接自動部署 adapter。
+正式部署之前還需驗證 HTTPS／網域、cookie、跨客戶隔離、備份與還原、寄信、實際付款／退款、人工營運流程、手機排版。Cloudflare Pages 靜態發布不能部署本 Node 核心。一般 owner manifest 仍回報 `runtime_deployment_adapter_required`；Studio 確認稿已有下方的簽署發布接線，但主機未配置就保持 `dedicated_runtime_host_required`。兩者都不偽造 live release。
+
+## Studio 確認稿 → 真正交易頁 → 發布
+
+客戶在 Studio 確認後，選擇內建購物或預約、幣別、時區，準備並下載 `confirmed-customer-site.json`。這條路保留確認稿的設計、圖片、文案，僅把功能槽連到 `/store`、`/book`、`/journal`、`/inquiry`。不重跑模型、不複製客戶資料、不開通外部 Shopify / Google 整合，也不履行既有付費訂單。已有下單或 release 的 session 不能走此新路。
+
+`scripts/generate.mjs` 驗證完整指紋，將 `approved-delivery.json` 和 runtime 一起交付。預覽可在全新隔離資料庫看確認稿；正式啟動不會自動發布。操作者需先配置既有專用主機、持久磁碟、正式獨立資料庫與管理密碼，填好商品／時段／聯絡方式／政策／付款模式。`SITE_RUNTIME_MODE=production`、`SITE_PAYMENT_MODE=manual` 或經授權的 `stripe_live` 是明確的操作者選擇，不能讓 preview 資料庫變成 production。
+
+在該主機安全注入至少 43 字 URL-safe 隨機 `SITE_DEPLOYMENT_KEY`，檢查真實持久磁碟後才設 `SITE_STORAGE_DURABLE_CONFIRMED=true`。DS 平台只由操作者配置 `MANAGED_SITE_RUNTIME_TARGETS_JSON`：每筆包含精確 `sessionId`、`origin`（目前只允許 HTTPS `*.onrender.com`）、`secretEnv`（如 `SITE_RUNTIME_DEPLOY_KEY_MERCHANT_A`）、`enabled: true`。對應環境秘密需與該站一致；不把秘密寫進 registry JSON、manifest 或瀏覽器。這個 registry 不買主機、不建立帳號、不接受客戶傳入目的網址。
+
+客戶再次確認發布後，平台先凍結確認版本，再對完整內容簽署 HMAC 並傳到 `/api/deployment`。runtime 檢查身份、語言、幣別、版本、持久儲存和營運資料，原子保存版本歷史，再切換 active 版本。平台讀回 `/health` 核對內容雜湊才標示已發布；失敗或回應不明保持凍結，重試同一版本可安全對帳。沒有主機時不呼叫外部服務。正式已確認設計不能在商家後台被直接改寫；商品庫存、時段、政策與聯絡設定仍可管理。跨版本的設計修改審核 UI 尚未串接，不能承諾上線後聊天即自動改版。
+
+## 語言、金額與安全測試金鑰
+
+品牌文案保留確認稿語言；交易介面目前有繁中、英文、日文、法文、西班牙文、阿拉伯文（RTL）。其他語言可預覽，但正式發布必須先有對應交易語言包；不假裝英語回退已完成在地化。商家後台的額外操作詞彙可回退英文。通知模板依網站語言產生，但實際寄信仍需寄件網域與另外驗收。
+
+支援 TWD、USD、EUR、GBP、JPY、KRW、VND、HKD、SGD、AUD、CAD、NZD、CHF、CNY、THB、MYR、PHP、INR、IDR、AED、SAR、BRL、MXN。每站單一訂價幣別、鎖定於資料庫，不按語言猜幣別、不提供即時換匯。JPY / KRW / VND 使用整數；其他使用兩位 charge minor units（TWD 的付款不是銀行撥款單位）。Stripe 商家所在地是否支援該幣別仍需實際核對。不能透過改設定重標已有商品或訂單的幣別。
+
+預覽站管理後台提供兩個 password 欄位貼 `sk_test_…` 與 `whsec_…`。只接受測試金鑰、管理者及同源 CSRF；以固定的獨立 `SITE_SESSION_SECRET` 衍生 AES-256-GCM key，加密保存在該站資料庫，API 不讀回明文。送出後清空欄位，儲存成功仍標記付款未驗收。現有待付款測試訂單會阻止換鑰。正式模式不接受此測試欄位，沒有真實 Stripe 驗收前不要宣稱金流完成；目前不需要客戶在聊天中提供任何金鑰。
 
 操作者可用 `node scripts/backup.mjs <site.sqlite> <uploads> <全新備份資料夾>` 做一致的 SQLite snapshot 與媒體副本。它不覆寫來源或既存備份；備份含客戶個資，必須限制權限並保留原加密 secret。還原必須在網站停機時，先保留回復點，再把副本配置到新獨立路徑並確認 siteId／mode；禁止直接覆寫正在交易的資料庫。
 
