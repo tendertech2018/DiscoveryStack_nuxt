@@ -22,6 +22,7 @@ import { normalizeStudioMedia } from '../../../managed-sites/funnel/studio-media
 import { analyseStudioReference } from '../../../managed-sites/funnel/studio-reference'
 import { clearlyUnrelatedStudioRequest } from '../../../../utils/managedSiteGuided'
 import { reviseStudioDesign } from '../../../managed-sites/funnel/studio-design-service'
+import { assertStudioProviderRequirement } from '../../../llm-provider/website-studio'
 
 const funnelPrefix = '/api/managed-sites/funnel'
 const privateHeaders = { 'cache-control': 'private, no-store, max-age=0', 'x-robots-tag': 'noindex, nofollow, noarchive', 'referrer-policy': 'no-referrer' }
@@ -175,6 +176,7 @@ export default defineEventHandler(async event => {
   const sessionId = parsePathId(segments[1], 'Managed-site funnel session id')
   const sessionToken = String(getHeader(event, 'x-managed-site-funnel-token') || '')
   const authenticatedSession = await loadFunnelSession(sessionId, sessionToken, repository)
+  if (method === 'POST' && ['studio-intake', 'studio-preview'].includes(segments[2] || '')) assertStudioProviderRequirement(getHeader(event, 'x-managed-site-required-provider'))
 
   if (segments.length === 2) {
     if (method === 'GET') return await sessionProjection(authenticatedSession)
