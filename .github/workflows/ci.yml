@@ -7,6 +7,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  customer-site-runtime:
+    name: customer sites (commerce + booking + signed payment boundaries)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22.23.1 }
+      - run: node --test services/customer-site-runtime/tests/*.test.mjs
   nuxt-app:
     name: nuxt-app (typecheck + build + test)
     runs-on: ubuntu-latest

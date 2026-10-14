@@ -27,7 +27,7 @@ export function customerRuntimeManifest(spec: SiteSpec, identity: { ownerUserId:
     launch: { status: 'configuration_ready', deployed: false, paymentVerified: false, databaseProvisioned: false, blocker: 'runtime_deployment_adapter_required', message: '已生成客戶網站核心設定；需要獨立 Node 託管與持久磁碟。現有靜態部署不會開通交易後台。' },
     migration: { automaticCustomerCopy: false, passwordsOrPaymentTokensImported: false },
     moduleAuthority: { fulfillsExistingShopifyOrder: false, replacesStaticRelease: false },
-    capabilities: input.engine === 'commerce' ? ['catalog', 'cart', 'server_priced_orders', 'inventory', 'manual_payment_confirmation', 'fulfilment', 'merchant_admin', 'blog', 'media', 'contact_inbox'] : ['services', 'capacity_one_slots', 'members', 'credit_ledger', 'booking', 'cancellation', 'reschedule', 'guest_booking_requests', 'merchant_admin', 'blog', 'media', 'contact_inbox'],
+    capabilities: input.engine === 'commerce' ? ['catalog', 'cart', 'server_priced_orders', 'inventory', 'manual_payment_confirmation', 'stripe_checkout_adapter', 'signed_payment_reconciliation', 'fulfilment', 'merchant_admin', 'blog', 'media', 'contact_inbox'] : ['services', 'capacity_one_slots', 'members', 'credit_ledger', 'booking', 'cancellation', 'reschedule', 'guest_booking_requests', 'guest_private_management', 'guest_status_notifications', 'merchant_admin', 'blog', 'media', 'contact_inbox'],
   }
   return { ...manifest, manifestFingerprint: managedSiteStableFingerprint(manifest) }
 }

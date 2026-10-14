@@ -54,7 +54,7 @@
     );
   const formatMoney = minor =>
     `TWD ${new Intl.NumberFormat("zh-TW").format((Number(minor) || 0) / 100)}`;
-  const paymentLabel = status => ({ pending: "待確認付款", paid: "已付款", refunded: "已退款" })[status] || status || "未提供付款狀態";
+  const paymentLabel = status => ({ pending: "待確認付款", paid: "已付款", refunded: "已退款", review_required: "待商家對帳（暫停出貨）" })[status] || status || "未提供付款狀態";
   const fulfillmentLabel = status => ({ unfulfilled: "待處理", processing: "處理中", shipped: "已出貨", delivered: "已送達", cancelled: "已取消" })[status] || status || "未提供出貨狀態";
   const bookingLabel = status => ({ confirmed: "已確認", cancelled: "已取消", pending_hold: "等待商家確認", rejected: "未接受", expired: "已逾期" })[status] || status || "未提供狀態";
   const localDate = (value, timeZone = "Asia/Taipei") => {
@@ -67,14 +67,17 @@
   const saveOrderToken = order => {
     if (!order?.id || !order.accessToken) return;
     sessionStorage.setItem(`ds-order-access-${order.id}`, JSON.stringify({ token: order.accessToken, expiresAt: Date.now() + 24 * 60 * 60 * 1000 }));
+    sessionStorage.setItem("ds-last-order", order.id);
   };
   const showOrder = async (order, host) => {
     saveOrderToken(order);
     let detail = order;
+    let accessToken = "";
     try {
       const saved = order.id && sessionStorage.getItem(`ds-order-access-${order.id}`);
       const credential = saved ? JSON.parse(saved) : null;
       const token = order.accessToken || (credential?.expiresAt > Date.now() ? credential.token : "");
+      accessToken = token;
       if (order.id && token) detail = await api(`/api/orders/${encodeURIComponent(order.id)}`, { headers: { "x-order-token": token } });
     } catch { /* keep the safe order receipt already returned by the authorized request */ }
     if (!host) return;
@@ -83,6 +86,21 @@
     let card = $("[data-order-details]");
     if (!card) { card = document.createElement("section"); card.className = "order-receipt"; card.dataset.orderDetails = ""; host.insertAdjacentElement("afterend", card); }
     card.innerHTML = `<h2>訂單 ${escapeHtml(detail.number || "")}</h2><p>${escapeHtml(paymentLabel(detail.paymentStatus))} · ${escapeHtml(fulfillmentLabel(detail.fulfillmentStatus))}</p><p>合計 ${formatMoney(detail.totalMinor || 0)}</p><ul>${items}</ul>${tracking || "<p>目前尚無物流更新。</p>"}`;
+    if (accessToken && ["stripe_test", "stripe_live"].includes(detail.paymentMode) && detail.paymentStatus === "pending" && detail.fulfillmentStatus === "unfulfilled") {
+      const button = document.createElement("button"); button.type = "button"; button.className = "button";
+      button.textContent = detail.paymentMode === "stripe_test" ? "前往 Stripe 測試付款（不扣真錢）" : "前往 Stripe 安全付款";
+      const message = document.createElement("p"); message.setAttribute("aria-live", "polite");
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          const result = await api(`/api/orders/${encodeURIComponent(detail.id)}/checkout`, { method: "POST", body: {}, headers: { "x-order-token": accessToken } });
+          const target = new URL(result.url);
+          if (target.origin !== "https://checkout.stripe.com" || target.username || target.password) throw new Error("付款網址驗證失敗，請聯絡商家。");
+          location.assign(target.href);
+        } catch (error) { message.textContent = error.message; button.disabled = false; }
+      });
+      card.append(button, message);
+    }
   };
   const addVariantRow = (container, value = {}) => {
     const row = document.createElement("div");
@@ -474,11 +492,17 @@
       { method: "POST", body: data }
     );
     sessionStorage.removeItem(idempotencyName);
+    if (guest && result.accessToken) {
+      const link = document.createElement("a"); link.className = "button";
+      link.textContent = "查看、取消或申請改期（請保留私人連結）";
+      link.href = `/booking#id=${encodeURIComponent(result.id)}&token=${encodeURIComponent(result.accessToken)}`;
+      form.insertAdjacentElement("afterend", link);
+    }
     say(
       form,
       result.message ||
         (guest
-          ? "已收到預約申請，商家確認前尚未完成預約或付款。"
+          ? `已收到預約申請，商家確認前尚未完成預約或付款。${result.notification?.configured ? "" : "目前未開啟 Email 通知，請保留下方私人連結查詢。"}`
           : "預約已送出。")
     );
   });
@@ -719,5 +743,48 @@
       }
     })
   );
+  const guestHost = $("[data-guest-booking]");
+  if (guestHost) {
+    const params = new URLSearchParams(location.hash.slice(1));
+    const id = params.get("id"), token = params.get("token");
+    const valid = id && /^[a-f0-9]{64}$/.test(token || "");
+    let current;
+    const headers = { "x-booking-token": token || "" };
+    const load = async () => {
+      try {
+        if (!valid) throw new Error("請使用建立預約時取得的完整私人連結。");
+        current = await api(`/api/booking-requests/${encodeURIComponent(id)}`, { headers });
+        $("[data-booking-summary]", guestHost).textContent = `${current.serviceName} · ${localDate(current.startsAt, guestHost.dataset.timeZone)} · ${bookingLabel(current.status)}`;
+        const changeable = ["confirmed", "pending_hold"].includes(current.status);
+        $("[data-guest-cancel]", guestHost).hidden = !changeable;
+        const form = $("[data-guest-reschedule]", guestHost); form.hidden = !changeable;
+        if (changeable) {
+          const { slots } = await api(`/api/slots?serviceId=${encodeURIComponent(current.serviceId)}`);
+          form.elements.slotId.innerHTML = slots.filter(s => s.available).map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(localDate(s.startsAt, guestHost.dataset.timeZone))}</option>`).join("");
+          form.querySelector("button").disabled = !form.elements.slotId.options.length;
+        }
+      } catch (error) { $("[data-booking-summary]", guestHost).textContent = error.message; }
+    };
+    $("[data-booking-refresh]", guestHost).addEventListener("click", load);
+    submit($("[data-guest-reschedule]", guestHost), async (data, form) => {
+      await api(`/api/booking-requests/${encodeURIComponent(id)}`, { method: "PATCH", headers, body: { action: "reschedule", slotId: data.slotId, version: current.version } });
+      say(form, "改期申請已送出，等待商家重新確認。"); await load();
+    });
+    $("[data-guest-cancel]", guestHost).addEventListener("click", async event => {
+      if (!confirm("確定取消此預約？若已付款，退款請洽商家。")) return;
+      const button = event.currentTarget; button.disabled = true;
+      try { await api(`/api/booking-requests/${encodeURIComponent(id)}`, { method: "PATCH", headers, body: { action: "cancel", version: current.version } }); await load(); }
+      catch (error) { say(guestHost, error.message); }
+      finally { button.disabled = false; }
+    });
+    void load();
+  }
+  const refreshOrder = async () => {
+    const host = $("[data-payment-return]");
+    const id = sessionStorage.getItem("ds-last-order");
+    if (host && id) await showOrder({ id }, host);
+  };
+  $("[data-refresh-order]")?.addEventListener("click", refreshOrder);
+  void refreshOrder();
   updateCart();
 })();

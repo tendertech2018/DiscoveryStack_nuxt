@@ -21,18 +21,22 @@ import { createManagedSiteMemoryRepository } from './fixtures/managed-site/repos
 import { createOrderingMemoryRepository } from './fixtures/managed-site/ordering-repository'
 import { managedSiteExactPaymentWebhookPayload, managedSiteFixedNow } from './fixtures/managed-site/live-connectors-application'
 import { studioModelFetch } from './fixtures/managed-site/studio-model'
+import { EN_STUDIO_CHROME, DEFAULT_STUDIO_DESIGN } from '../utils/managedSitePresentation'
 
 const clock = () => new Date(managedSiteFixedNow)
 const brief = { brandName: '日光顧問', brief: '提供品牌策略顧問服務，讓訪客提出合作需求。', siteType: 'brand_blog', goal: 'increase_inquiries', mode: 'ai' } as const
 const providerConfiguration = { configured: true as const, endpoint: 'https://api.openai.com/v1/chat/completions', model: 'test-only', apiKey: 'isolated-test-only', providerLabel: 'openai' as const, source: 'llm' as const }
 afterEach(() => vi.unstubAllEnvs())
 
-async function fixture(siteType = brief.siteType as 'one_page' | 'brand_blog' | 'simple_commerce') {
+async function fixture(siteType = brief.siteType as 'one_page' | 'brand_blog' | 'simple_commerce', language?: string) {
+  // Inquiry sites now include their real first-party form without asking the customer to select it again.
+  vi.stubEnv('NUXT_MANAGED_SITE_FORM_TOKEN_PEPPER', 'isolated-studio-test-pepper')
+  vi.stubEnv('DISCOVERYSTACK_MANAGED_SITE_FORM_INGEST_ORIGIN', 'https://forms.acme.taipei')
   const managed = createManagedSiteMemoryRepository(), ordering = createOrderingMemoryRepository(), live = createLiveConnectorMemoryRepository()
   const funnel = createFunnelSessionMemoryRepository({ projects: () => managed.state.projects, audits: () => managed.state.audits, fulfilmentCandidates: () => funnel.state.sessions.filter(row => row.releaseId).map(row => ({ ...row, ownerUserId: 1 })) })
   const created = await createFunnelSession(funnel.repository, clock)
   const fetchImpl = vi.fn(studioModelFetch())
-  const draft = await generateAndStoreStudioProposal(created.session, parseStudioRequest({ ...brief, siteType }), funnel.repository, { providerConfiguration, fetchImpl, clock })
+  const draft = await generateAndStoreStudioProposal(created.session, parseStudioRequest({ ...brief, siteType, ...(language ? { language } : {}) }), funnel.repository, { providerConfiguration, fetchImpl, clock })
   const confirmed = await confirmStudioProposal(created.session, { proposalId: draft.proposalId, preset: 'bloom' }, funnel.repository, clock)
   await saveFunnelStep(created.sessionId, created.sessionToken, { step: 9, answers: { contact: { contactName: 'Test customer', email: 'test@example.test' }, domain: { option: 'new', name: 'confirmed-studio', tld: 'com' }, plan: { planKey: 'site_only', cadenceDays: 7 } } }, funnel.repository, clock)
   await recordFunnelConsent(created.sessionId, created.sessionToken, { policyVersion: MANAGED_SITE_FUNNEL_CONSENT_VERSION, scrolledToBottom: true }, funnel.repository, clock)
@@ -48,6 +52,32 @@ async function fixture(siteType = brief.siteType as 'one_page' | 'brand_blog' | 
 }
 
 describe('confirmed studio copy into the real governed delivery pipeline (isolated providers)', () => {
+  it('keeps the new brand renderer, selected composition and copy through confirmation, build and immutable release without another AI call', async () => {
+    const f = await fixture('brand_blog', 'en')
+    expect(f.draft.designs.every(design => design.html.includes('data-studio-renderer="brand-studio-v2"'))).toBe(true)
+    await runFunnelBuild(f.created.sessionId, f.created.sessionToken, f.dependencies)
+    const candidate = f.live.state.candidates[0]!
+    const stored = await f.vault.lookupImmutableCandidate({ ownerUserId: 1, projectId: candidate.projectId, requestFingerprint: candidate.requestFingerprint })
+    const bundle = stored!.bundle as any
+    expect(bundle.blueprint.studioPresentation.renderer).toBe('brand-studio-v2')
+    expect(bundle.blueprint.customerSitePreset).toBe('bloom')
+    expect(projectStudioCopy(bundle.blueprint)).toEqual(f.draft.editContext)
+    const home = renderManagedSiteStaticAssets(bundle.blueprint, bundle.files).find(file => file.path === 'index.html')!.content
+    expect(home).toContain('data-studio-renderer="brand-studio-v2"')
+    expect(home).toContain('class="layout-showcase')
+    expect(f.live.state.releases[0]!.contentHash).toBe(candidate.contentHash)
+    expect(f.fetchImpl).toHaveBeenCalledTimes(1)
+    expect(f.generate).not.toHaveBeenCalled()
+  })
+  it('blocks payment creation for a guided artifact whose commerce is still a placeholder', async () => {
+    const f = await fixture('simple_commerce')
+    await runFunnelBuild(f.created.sessionId, f.created.sessionToken, f.dependencies)
+    const blueprint = (f.live.state.candidates[0]!.manifest as any).blueprint
+    blueprint.studioPresentation = { version: 'studio-presentation-v1', design: DEFAULT_STUDIO_DESIGN, chrome: EN_STUDIO_CHROME }
+    const createCheckout = vi.fn(async (): Promise<never> => { throw new Error('Payment must not start') })
+    await expect(runFunnelCheckout(f.created.sessionId, f.created.sessionToken, { ...f.dependencies, checkoutAdapter: { createCheckout } as any })).rejects.toMatchObject({ data: { code: 'STUDIO_FUNCTIONS_NOT_ACTIVATED' } })
+    expect(createCheckout).not.toHaveBeenCalled()
+  })
   it('builds the explicitly accepted revision and binds selected design into immutable content bytes', async () => {
     const f = await fixture()
     const revised = await generateAndStoreStudioProposal(f.created.session, { ...brief, revision: { proposalId: f.draft.proposalId, instruction: '首頁標題改得更親切', base: f.draft.editContext! } }, f.funnel.repository, { providerConfiguration, fetchImpl: f.fetchImpl, clock })

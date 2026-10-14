@@ -3,6 +3,7 @@ import { createManagedSitePreview, createManagedSiteQuote, createManagedSiteDraf
 import { convertPaidOrderToManagedProject } from '../server/managed-sites/conversion-service'
 import { linkManagedSiteContentOperations } from '../server/managed-sites/modules-service'
 import { getManagedSiteCustomerVisibilityDashboard } from '../server/managed-sites/customer-visibility-service'
+import { getManagedSiteMonthlyReport } from '../server/managed-sites/customer-monthly-report-service'
 import type { PaymentEventVerifier } from '../server/managed-sites/ordering-types'
 import { createManagedSiteMemoryRepository } from './fixtures/managed-site/repository'
 import { createInjectedManagedSiteCheckoutAuthorityResolver, createOrderingMemoryRepository } from './fixtures/managed-site/ordering-repository'
@@ -35,6 +36,19 @@ const summary = {
 } as any
 
 describe('managed-site customer citation dashboard', () => {
+  it('loads a calendar report only through the paid owner/client/exact-domain binding', async () => {
+    const site = await paidSite()
+    const dependencies = { managed: site.managed.repository, operations: site.content.repository, now: new Date('2026-10-05T12:00:00Z'), listProjects: async (owner: number, domain: string) => { expect(owner).toBe(1); expect(domain).toBe('visibility.taipei'); return [{ id: 9, canonicalDomain: domain }] }, readEvidence: async (owner: number, id: number, domain: string, from: Date, until: Date) => {
+      expect([owner, id, domain]).toEqual([1, 9, 'visibility.taipei']); expect(from.getTime()).toBeLessThan(until.getTime())
+      return { queries: [], observations: [] }
+    } }
+    const result = await getManagedSiteMonthlyReport(1, site.projectId, '2026-09', dependencies)
+    expect(result).toMatchObject({ status: 'insufficient_data', month: '2026-09', timeZone: 'Asia/Taipei', sampleCount: 0, attributedConversions: null })
+    await expect(getManagedSiteMonthlyReport(2, site.projectId, '2026-09', dependencies)).rejects.toMatchObject({ statusCode: 404 })
+    await expect(getManagedSiteMonthlyReport(1, site.projectId, '2027-01', dependencies)).rejects.toMatchObject({ statusCode: 422 })
+    await expect(getManagedSiteMonthlyReport(1, site.projectId, '2026-09', { ...dependencies, listProjects: async () => [{ id: 9, canonicalDomain: 'other.taipei' }] })).rejects.toMatchObject({ statusCode: 409 })
+    expect(await getManagedSiteMonthlyReport(1, site.projectId, '2026-09', { ...dependencies, listProjects: async () => [] })).toEqual({ status: 'not_configured' })
+  })
   it('returns only the paid site’s exact domain and approved observations without owner notes or unrelated citations', async () => {
     const site = await paidSite()
     const reader = { listProjects: async (owner: number, domain: string) => { expect(owner).toBe(1); expect(domain).toBe('visibility.taipei'); return [{ id: 9, canonicalDomain: domain }] }, getSummary: async (owner: number, id: number) => { expect([owner, id]).toEqual([1, 9]); return summary } } as any

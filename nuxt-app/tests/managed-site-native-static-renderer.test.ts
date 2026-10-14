@@ -152,6 +152,21 @@ function asset(assets: ReturnType<typeof renderManagedSiteNativeStaticAssets>, p
 }
 
 describe('managed-site native whole-site static renderer', () => {
+  it('updates the public knowledge files after actual page overlays and approved article publication', () => {
+    const published = article({ publicationId: 'deliverable-knowledge-001', slug: 'verified-answer', contentType: 'faq', language: 'en', title: 'Verified answer', body: '# Answer\n\nThe currently approved answer.', evidence: 'approved-evidence' })
+    const assets = renderManagedSiteNativeStaticAssets({ bundle: bundle(), canonicalOrigin: CANONICAL_ORIGIN, pages: [compiled({ route: '/services' })], articles: [published], resolveMediaReference: publicMediaUrl })
+    const full = asset(assets, 'llms-full.txt').content
+    expect(full).toContain('EDITED CURRENT SERVICE PAGE')
+    expect(full).not.toContain('BASE SERVICE MUST BE REPLACED')
+    expect(full).toContain('The currently approved answer')
+    expect(full).not.toContain(CONTACT_ENDPOINT)
+    expect(full).not.toContain('approved-evidence')
+    expect(asset(assets, 'llms.txt').content).toContain('/en/faq/verified-answer')
+    const withoutArticle = renderManagedSiteNativeStaticAssets({ bundle: bundle(), canonicalOrigin: CANONICAL_ORIGIN, pages: [compiled({ route: '/services', noindex: true })], articles: [], resolveMediaReference: publicMediaUrl })
+    expect(asset(withoutArticle, 'llms-full.txt').content).not.toContain('EDITED CURRENT SERVICE PAGE')
+    expect(asset(withoutArticle, 'llms.txt').content).not.toContain('/en/faq/verified-answer')
+    expect(asset(withoutArticle, 'site-knowledge-manifest.json').content).not.toBe(asset(assets, 'site-knowledge-manifest.json').content)
+  })
   it('rebuilds the complete site from base pages, the current edited page, and three immutable articles', () => {
     const editedServices = compiled({
       route: '/services',

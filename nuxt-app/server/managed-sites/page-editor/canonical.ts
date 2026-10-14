@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createError } from "h3";
+import { normalizeSiteLanguage } from '../../../utils/managedSiteLanguage'
 import { parseBlock } from "./catalog";
 import {
   PAGE_DOCUMENT_VERSION,
@@ -184,7 +185,7 @@ export function parsePageDocument(
     !/^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/u.test(value.pageId) ||
     !Number.isSafeInteger(value.version) ||
     Number(value.version) < 1 ||
-    !["zh-hant", "en"].includes(String(value.locale))
+    !normalizeSiteLanguage(value.locale)
   )
     invalid("PageDocument identity, version or locale is invalid.");
   if (

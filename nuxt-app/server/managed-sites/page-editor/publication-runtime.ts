@@ -10,6 +10,7 @@ import type { ApprovedFirstPartyPublication, FirstPartyExecutionResult, FirstPar
 import { getDrizzleMediaVaultRepository } from '../media-vault/repository-drizzle'
 import { canonicalFingerprint, canonicalJson, parsePageDocument } from './canonical'
 import { compilePageDocument } from './compiler'
+import { assertPagePreflight } from './preflight'
 import { executeManagedSiteNativePublicationIfConfigured } from './native-publication'
 import { managedPageRouteSlug, serializeManagedPageTransport } from './transport'
 import type { CompiledPageArtifact, PageActor, PageDocument } from './types'
@@ -38,6 +39,7 @@ export async function validateAndExecutePublicationWork(input: { work: Publicati
   if (!RELEASE_STATES.includes(input.releaseStatus as any)) throw Object.assign(new Error('Managed-site release authority is no longer publishable.'), { reasonCode: 'RELEASE_REVOKED' })
   if (input.page.version !== input.work.pageVersion || input.page.fingerprint !== input.work.pageFingerprint) throw Object.assign(new Error('Page version changed after publication was queued.'), { reasonCode: 'STALE_PAGE_VERSION' })
   const artifact = await compilePageDocument({ actor: executionActor(input.work), document: input.page, resolveMedia: input.resolveMedia, mode: 'publish', now: input.now, generatedAt: input.work.createdAt })
+  assertPagePreflight(artifact)
   if (artifact.artifactFingerprint !== input.work.artifactFingerprint || artifact.mediaSetFingerprint !== input.work.mediaSetFingerprint || canonicalJson(artifact) !== canonicalJson(input.work.artifact)) throw Object.assign(new Error('Page artifact or media authority changed after publication was queued.'), { reasonCode: 'STALE_ARTIFACT_OR_MEDIA' })
   const target = targetProjection(input.target, input.work); if (target.status !== 'active' || !target.executionEnabled) throw Object.assign(new Error('Publication target is revoked or execution-disabled.'), { reasonCode: 'TARGET_REVOKED' })
   const publication = publicationProjection(input.work, input.page, artifact); const plan = planFirstPartyPublication(target, publication, input.now.toISOString()); if (plan.status !== 'planned') return plan

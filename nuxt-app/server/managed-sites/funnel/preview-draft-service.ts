@@ -12,6 +12,7 @@ import type { ManagedSiteBlueprintProviderOutput, ManagedSiteBlueprintV1, Manage
 import type { ManagedSiteFunnelSession } from '../../database/schema'
 import { CUSTOMER_SITE_PRESETS, type CustomerSitePreset, type SiteSpec } from '../site-spec'
 import type { FunnelAnswers } from './session-service'
+import type { StudioDesign, StudioPresentation, StudioMedia } from '../../../utils/managedSitePresentation'
 import { funnelSiteSpec } from './quote-projection'
 
 export type FunnelPreviewSource = 'llm' | 'template'
@@ -35,6 +36,10 @@ export type FunnelPreviewDraft = {
 }
 
 export type FunnelPreviewDraftDependencies = {
+  studioDesign?: StudioDesign
+  studioBasePresentation?: StudioPresentation
+  studioMedia?: StudioMedia[]
+  studioStyle?: string
   generationAdapter?: ManagedSiteGenerationAdapter
   providerConfiguration?: WebsiteStudioProviderConfiguration
   clock?: () => Date
@@ -126,11 +131,13 @@ function configuredPreviewAdapter(configuration: Extract<WebsiteStudioProviderCo
   }
 }
 
-function assertSafePreviewHtml(html: string): void {
+function assertSafePreviewHtml(html: string, approvedImages: readonly string[] = []): void {
   if (Buffer.byteLength(html, 'utf8') > MANAGED_SITE_BLUEPRINT_MAX_BYTES) throw new PreviewDraftUnavailableError('unsafe_html')
   if (/<\s*script\b/iu.test(html) || /\son[a-z]+\s*=/iu.test(html)) throw new PreviewDraftUnavailableError('unsafe_html')
-  for (const match of html.matchAll(/\s(?:src|href)\s*=\s*["']([^"']+)["']/giu)) {
-    const href = match[1]!.trim()
+  for (const match of html.matchAll(/\s(src|href)\s*=\s*["']([^"']+)["']/giu)) {
+    const href = match[2]!.trim()
+    // Only exact, already-validated first-party raster bytes; not arbitrary data URLs or SVG.
+    if (match[1]!.toLowerCase() === 'src' && approvedImages.includes(href)) continue
     if (!href.startsWith('/') && !href.startsWith('#') && !/^https:\/\//iu.test(href)) throw new PreviewDraftUnavailableError('unsafe_html')
   }
 }
@@ -139,7 +146,7 @@ function renderPreview(blueprint: ManagedSiteBlueprintProviderOutput['blueprint'
   const files = compileManagedSiteBlueprint(blueprint)
   const asset = renderManagedSiteStaticAssets(blueprint, files, undefined, customerSitePreset).find(candidate => candidate.path === 'index.html')
   if (!asset) throw new PreviewDraftUnavailableError('malformed_output')
-  assertSafePreviewHtml(asset.content)
+  assertSafePreviewHtml(asset.content, blueprint.studioPresentation?.media?.map(image => image.dataUrl))
   const home = blueprint.pages.find(page => page.pageKey === 'home')
   if (!home) throw new PreviewDraftUnavailableError('malformed_output')
   return { blueprintHash, headline: home.title, sections: home.sections.map(section => ({ heading: section.heading, body: section.body })), html: asset.content }
@@ -205,6 +212,7 @@ export async function generateFunnelPreviewDraft(session: ManagedSiteFunnelSessi
       source = 'llm'
       sourceReason = '由已設定的 AI 產生器建立草稿。'
     } catch (error) {
+      if ((error as any)?.data?.code === 'STUDIO_GUIDANCE') throw error
       const code = error instanceof PreviewDraftUnavailableError ? error.code : (error as { code?: unknown; statusCode?: unknown })?.code || (error as { statusCode?: unknown })?.statusCode || 'unknown'
       console.warn('[managed-site-funnel] preview provider fallback', code)
       ;({ blueprint, blueprintHash } = templateBlueprint(request, dependencies))

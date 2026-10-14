@@ -8,7 +8,7 @@ const e = (value = "") =>
   );
 const money = (minor, currency = "TWD") =>
   `${currency} ${new Intl.NumberFormat("zh-TW").format((Number(minor) || 0) / 100)}`;
-const paymentLabel = status => ({ pending: "待確認付款", paid: "已付款", refunded: "已退款" })[status] || status || "未提供付款狀態";
+const paymentLabel = status => ({ pending: "待確認付款", paid: "已付款", refunded: "已退款", review_required: "待商家對帳（暫停出貨）" })[status] || status || "未提供付款狀態";
 const fulfillmentLabel = status => ({ unfulfilled: "待處理", processing: "處理中", shipped: "已出貨", delivered: "已送達", cancelled: "已取消" })[status] || status || "未提供出貨狀態";
 const bookingLabel = status => ({ confirmed: "已確認", cancelled: "已取消", pending_hold: "等待商家確認", rejected: "未接受", expired: "已逾期" })[status] || status || "未提供狀態";
 const postLabel = status => ({ draft: "草稿", published: "已發布" })[status] || status || "草稿";
@@ -51,13 +51,16 @@ export function renderPage({
   actor = null,
   query = {},
   members = [],
+  payments = { configured: false },
+  assetVersion = 'v1',
 } = {}) {
   const preset = ["atelier", "bloom", "alignment"].includes(config.preset)
     ? config.preset
     : "atelier";
   const isAdmin = actor?.role === "admin";
   const currency = config.currency || "TWD";
-  const checkoutEnabled = config.commerce?.paymentMode === "manual" || (config.commerce?.paymentMode === "sandbox" && config.mode !== "production");
+  const stripe = ["stripe_test", "stripe_live"].includes(config.commerce?.paymentMode);
+  const checkoutEnabled = config.commerce?.paymentMode === "manual" || (config.commerce?.paymentMode === "sandbox" && config.mode !== "production") || (stripe && payments.configured);
   const products = list(commerce, "listProducts", {
     admin: isAdmin,
     query: query.q,
@@ -135,6 +138,8 @@ export function renderPage({
       .join(
         ""
       )}</select></label>${actor?.role !== "member" ? '<label>姓名<input name="name" autocomplete="name" required></label><label>電子郵件<input name="email" type="email" autocomplete="email" required></label><label>聯絡電話<input name="phone" type="tel" autocomplete="tel" required></label><label class="consent-label"><input name="consent" type="checkbox" value="true" required> 我同意商家使用我的聯絡資料處理預約申請。</label>' : ""}<p class="form-note">預約申請需由商家確認；送出不代表付款或預約已確認。</p><button class="button" type="submit"${slots.some(s => s.available) ? "" : " disabled"}>送出預約申請</button><p class="form-message" aria-live="polite"></p></form>`;
+  else if (path === "/booking")
+    body = `<section class="page-intro"><p class="eyebrow">預約管理</p><h1>我的預約</h1><p>使用建立預約時的私人連結查詢，不需要註冊帳號。</p></section><section class="form-panel" data-guest-booking data-time-zone="${e(config.booking?.timeZone || 'Asia/Taipei')}"><p data-booking-summary aria-live="polite">正在讀取預約…</p><button type="button" class="button button-small" data-booking-refresh>更新狀態</button><form data-guest-reschedule hidden><label>更換時段<select name="slotId" required></select></label><button class="button" type="submit">申請改期</button><p class="form-message" aria-live="polite"></p></form><button class="button button-small" type="button" data-guest-cancel hidden>取消預約</button><p class="form-message" aria-live="polite"></p><p>改期需重新由商家確認；取消不代表自動退款。私人連結可操作此筆預約，請妥善保管。</p></section>`;
   else if (path === "/journal")
     body = `<section class="page-intro"><p class="eyebrow">品牌誌記</p><h1>靈感與日常</h1><p>分享生活裡的片刻與想法。</p></section><section class="section"><div class="journal-grid">${
       posts
@@ -162,7 +167,7 @@ export function renderPage({
   } else if (path === "/cart")
     body = `<section class="page-intro"><p class="eyebrow">已選商品</p><h1>我的購物袋</h1></section><section class="section" data-cart><div data-cart-items><p class="empty-state">購物袋目前是空的。</p></div><p data-cart-total></p><a class="button" href="/checkout">前往結帳</a></section>`;
   else if (path === "/checkout")
-    body = `<section class="page-intro"><p class="eyebrow">即將完成</p><h1>確認訂單</h1><p>${config.commerce?.paymentMode === "manual" ? e(config.commerce.manualPaymentInstructions || "訂單送出後將由商家人工確認付款；本網站不會在線上收款。") : checkoutEnabled ? "目前使用預覽付款流程。" : "訂單尚未開放，歡迎先與我們聯絡。"}</p></section><form class="form-panel" data-checkout-form><label>姓名<input name="name" autocomplete="name" required></label><label>電子郵件<input name="email" type="email" autocomplete="email" required></label><label>聯絡電話<input name="phone" type="tel" autocomplete="tel" required></label><label>配送地址<textarea name="address" autocomplete="street-address" required></textarea></label><label class="consent-label"><input name="consent" type="checkbox" value="true" required> 我已閱讀並同意購物條款與隱私說明。</label><button class="button" type="submit"${checkoutEnabled ? "" : " disabled"}>送出訂單</button><p class="form-message" aria-live="polite"></p></form>`;
+    body = `<section class="page-intro"><p class="eyebrow">即將完成</p><h1>確認訂單</h1><p>${config.commerce?.paymentMode === "manual" ? e(config.commerce.manualPaymentInstructions || "訂單送出後將由商家人工確認付款；本網站不會在線上收款。") : !checkoutEnabled ? "訂單尚未開放，歡迎先與我們聯絡。" : stripe ? (config.commerce.paymentMode === "stripe_test" ? "Stripe 測試環境：僅供驗收，不扣真錢、不使用真實卡號。" : "建立訂單後，請前往 Stripe 安全付款頁完成刷卡。") : "目前使用預覽付款流程。"}</p></section><form class="form-panel" data-checkout-form><label>姓名<input name="name" autocomplete="name" required></label><label>電子郵件<input name="email" type="email" autocomplete="email" required></label><label>聯絡電話<input name="phone" type="tel" autocomplete="tel" required></label><label>配送地址<textarea name="address" autocomplete="street-address" required></textarea></label><label class="consent-label"><input name="consent" type="checkbox" value="true" required> 我已閱讀並同意購物條款與隱私說明。</label><button class="button" type="submit"${checkoutEnabled ? "" : " disabled"}>送出訂單</button><p class="form-message" aria-live="polite"></p></form>`;
   else if (path === "/orders" || path === "/account")
     body = `<section class="page-intro"><p class="eyebrow">會員專區</p><h1>${path === "/orders" ? "訂單查詢" : "我的帳戶"}</h1></section><section class="section">${actor ? `<p>目前登入：${e(actor.email || actor.name || "會員")}</p>${actor.emailVerified === false ? '<div class="account-verification"><p>請完成電子郵件驗證以啟用會員帳戶。</p><button class="button button-small" type="button" data-email-verification-request>寄送驗證信</button><p class="form-message" data-verification-message aria-live="polite"></p></div>' : ""}<div data-account-content></div>` : `<form class="form-panel" data-login-form><label>電子郵件<input name="email" type="email" required autocomplete="email"></label><label>密碼<input name="password" type="password" required autocomplete="current-password"></label><button class="button">登入</button><p class="form-message" aria-live="polite"></p><a href="/register">建立會員帳號</a> · <a href="/forgot-password">忘記密碼？</a></form><form class="lookup-form" data-order-lookup><h2>查詢訂單</h2><label>訂單編號<input name="number" required></label><label>訂單電子郵件<input name="email" type="email" required></label><button class="button button-small">查詢訂單</button><p class="form-message" aria-live="polite"></p></form>`}</section>`;
   else if (path === "/register" || path === "/login")
@@ -190,8 +195,9 @@ export function renderPage({
           <p class="form-message" data-admin-message aria-live="polite"></p></section>`
       : '<section class="page-intro"><h1>請先登入管理後台</h1><a class="button" href="/admin/login">管理員登入</a></section>';
   const footer = `<footer class="footer"><div class="footer-brand">${icon}<span>${e(title)}</span></div><p>${e(config.tagline || config.description || "")}</p><div class="footer-links"><a href="/policies">${config.siteType === "commerce" ? "購物政策" : "預約政策"}</a><a href="/contact">聯絡我們</a>${config.siteType === "commerce" ? '<a href="/shop">商品選購</a>' : '<a href="/services">服務項目</a>'}</div><small>© ${new Date().getFullYear()} ${e(title)}</small></footer>`;
+  if (path === "/orders") body += '<section class="section" data-payment-return><p>付款狀態以金流確認為準；返回此頁不代表付款成功。</p><button type="button" class="button button-small" data-refresh-order>更新付款狀態</button><p class="form-message" aria-live="polite"></p></section>';
   const knownPaths = new Set(["/", "/shop", "/services", "/book", "/journal", "/about", "/contact", "/policies", "/cart", "/checkout", "/orders", "/account", "/register", "/login", "/forgot-password", "/reset-password", "/verify-email", "/admin", "/admin/login"]);
-  const exists = knownPaths.has(path) || /^\/products\/[^/]+$/u.test(path) || /^\/journal\/[^/]+$/u.test(path);
+  const exists = knownPaths.has(path) || path === '/booking' || /^\/products\/[^/]+$/u.test(path) || /^\/journal\/[^/]+$/u.test(path);
   if (!exists || body === null) return null;
-  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="${e(config.description || "")}"><meta name="theme-color" content="#f6f2ea"><title>${e(path.startsWith("/admin") ? "管理工作室 · " : "")}${e(title)}</title><link rel="stylesheet" href="/assets/site.css"></head><body class="preset-${preset}"><header class="site-header">${header}</header><main>${body}</main>${footer}<script src="/assets/site.js" defer></script></body></html>`;
+  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="${e(config.description || "")}"><meta name="theme-color" content="#f6f2ea"><title>${e(path.startsWith("/admin") ? "管理工作室 · " : "")}${e(title)}</title><link rel="stylesheet" href="/assets/site.css?v=${e(assetVersion)}"></head><body class="preset-${preset}"><header class="site-header">${header}</header><main>${body}</main>${footer}<script src="/assets/site.js?v=${e(assetVersion)}" defer></script></body></html>`;
 }

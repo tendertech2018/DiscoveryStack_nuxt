@@ -13,6 +13,7 @@ export function studioModelResponse(context: any) {
   }
   return {
     schemaVersion: 'managed-site-studio-intelligence-v1',
+    ...(context.chromeShape ? { chrome: context.chromeShape } : {}),
     strategy: {
       ...context.strategyShape,
       audience: '第一次認識這個品牌、想先了解服務的人（測試建議）',

@@ -32,7 +32,7 @@ export function parseConfig(value) {
   const commerce = value.commerce || {}
   const booking = value.booking || {}
   const paymentMode = commerce.paymentMode || 'disabled'
-  if (!['disabled', 'manual', 'sandbox'].includes(paymentMode) || value.mode === 'production' && paymentMode === 'sandbox') fail(422, '正式網站不可使用模擬付款')
+  if (!['disabled', 'manual', 'sandbox', 'stripe_test', 'stripe_live'].includes(paymentMode) || value.mode === 'production' && ['sandbox', 'stripe_test'].includes(paymentMode) || value.mode === 'preview' && paymentMode === 'stripe_live') fail(422, '正式網站不可使用模擬付款；正式與測試付款模式不可混用')
   const email = optional(contact.email, '聯絡 Email', 320).toLowerCase()
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email)) fail(422, '聯絡 Email 格式不正確')
   const timeZone = booking.timeZone || 'Asia/Taipei'

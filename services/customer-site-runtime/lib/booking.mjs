@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { fail, id, integer, iso, text } from './errors.mjs'
 import { transaction } from './store.mjs'
 
@@ -238,6 +238,7 @@ export function createBooking(db, config = {}) {
   }
 
   ensureSchema(db)
+  db.exec('CREATE TABLE IF NOT EXISTS booking_guest_access (token_hash TEXT PRIMARY KEY, booking_id TEXT NOT NULL REFERENCES booking_records(id), expires_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS booking_guest_access_by_booking ON booking_guest_access(booking_id)')
 
   const serviceById = db.prepare('SELECT * FROM booking_services WHERE id = ?')
   const slotById = db.prepare(`
@@ -625,7 +626,7 @@ export function createBooking(db, config = {}) {
       `).get(requestOwner, idempotencyKey)
       if (replay) {
         if (replay.request_fingerprint !== requestFingerprint) fail(409, '相同冪等識別已用於不同訪客預約', 'IDEMPOTENCY_CONFLICT')
-        return bookingView(replay, { replayed: true })
+        return guestReceipt(replay, true)
       }
 
       const service = serviceById.get(serviceId)
@@ -653,7 +654,64 @@ export function createBooking(db, config = {}) {
         toSlotId: slot.id,
         detail: { holdExpiresAt, paymentMode: 'manual' },
       })
-      return bookingView(loadBooking(bookingId))
+      return guestReceipt(loadBooking(bookingId))
+    })
+  }
+
+  // The URL fragment is a capability, not a booking ID/email authentication shortcut.
+  // Only a hash is persisted, and it never appears in admin lists, events or API logs.
+  function guestReceipt(row, replayed = false) {
+    db.prepare('DELETE FROM booking_guest_access WHERE expires_at<=?').run(iso(currentDate()))
+    if (db.prepare('SELECT count(*) AS n FROM booking_guest_access WHERE booking_id=?').get(row.id).n >= 64) fail(429, '請使用原先取得的私人預約連結', 'BOOKING_ACCESS_LIMIT')
+    const accessToken = randomBytes(32).toString('hex')
+    const expiresAt = new Date(Math.max(currentDate().getTime(), Date.parse(row.ends_at)) + 86400000).toISOString()
+    db.prepare('INSERT INTO booking_guest_access(token_hash,booking_id,expires_at) VALUES(?,?,?)').run(fingerprint(accessToken), row.id, expiresAt)
+    return { ...bookingView(row, { replayed }), accessToken }
+  }
+
+  function authorizedGuest(bookingId, token) {
+    if (typeof token !== 'string' || !/^[a-f0-9]{64}$/u.test(token)) fail(404, '找不到預約', 'BOOKING_NOT_FOUND')
+    const credential = db.prepare('SELECT booking_id FROM booking_guest_access WHERE booking_id=? AND token_hash=? AND expires_at>?').get(bookingId, fingerprint(token), iso(currentDate()))
+    if (!credential) fail(404, '找不到預約', 'BOOKING_NOT_FOUND')
+    const row = loadBooking(bookingId)
+    if (row.kind !== 'guest') fail(404, '找不到預約', 'BOOKING_NOT_FOUND')
+    return row
+  }
+
+  function getGuest(bookingId, token) {
+    return transaction(db, () => {
+      expireGuestHolds(iso(currentDate()))
+      return bookingView(authorizedGuest(bookingId, token))
+    })
+  }
+
+  function changeGuest(bookingId, token, input) {
+    if (!input || !['cancel', 'reschedule'].includes(input.action)) fail(422, '預約異動動作不正確')
+    rejectPaymentClaims(input)
+    const now = currentDate(), at = iso(now)
+    return transaction(db, () => {
+      expireGuestHolds(at)
+      const row = authorizedGuest(bookingId, token)
+      if (input.action === 'cancel' && row.status === 'cancelled') return bookingView(row, { replayed: true })
+      if (integer(input.version, '預約版本', 1, Number.MAX_SAFE_INTEGER) !== row.version) fail(409, '預約已更新，請重新載入', 'VERSION_CONFLICT')
+      if (!['confirmed', 'pending_hold'].includes(row.status) || Date.parse(row.starts_at) <= now.getTime()) fail(409, '此預約目前無法異動，請聯絡商家', 'BOOKING_NOT_CHANGEABLE')
+      if (input.action === 'cancel') {
+        db.prepare("UPDATE booking_records SET status='cancelled',hold_expires_at=NULL,version=version+1,updated_at=? WHERE id=?").run(at, row.id)
+        addEvent(row.id, 'guest_cancelled', at, { fromSlotId: row.slot_id, detail: { paymentRecorded: false, automaticRefund: false } })
+      } else {
+        const slotId = identifier(input.slotId, '新時段識別')
+        if (slotId === row.slot_id) return bookingView(row, { replayed: true })
+        if (now.getTime() > Date.parse(row.starts_at) - cancellationHours * 3600000) fail(409, `開始前 ${cancellationHours} 小時內不可改期`, 'RESCHEDULE_CUTOFF_PASSED')
+        const target = slotById.get(slotId)
+        if (!target) fail(404, '找不到新時段', 'SLOT_NOT_FOUND')
+        assertSlotOpen(target, row.service_id, now.getTime())
+        const expiry = row.hold_expires_at || iso(new Date(now.getTime() + guestHoldMinutes * 60000))
+        const holdUntil = iso(new Date(Math.min(Date.parse(expiry), Date.parse(target.starts_at))))
+        db.prepare("UPDATE booking_records SET slot_id=?,starts_at=?,ends_at=?,resource_id=?,status='pending_hold',hold_expires_at=?,version=version+1,updated_at=? WHERE id=?").run(target.id, target.starts_at, target.ends_at, target.resource_id, holdUntil, at, row.id)
+        addEvent(row.id, 'guest_rescheduled', at, { fromSlotId: row.slot_id, toSlotId: target.id, detail: { confirmationRequired: true } })
+        db.prepare('UPDATE booking_guest_access SET expires_at=? WHERE booking_id=?').run(iso(new Date(Date.parse(target.ends_at) + 86400000)), row.id)
+      }
+      return bookingView(loadBooking(row.id))
     })
   }
 
@@ -699,5 +757,7 @@ export function createBooking(db, config = {}) {
     balance,
     requestGuest,
     confirmGuest,
+    getGuest,
+    changeGuest,
   }
 }

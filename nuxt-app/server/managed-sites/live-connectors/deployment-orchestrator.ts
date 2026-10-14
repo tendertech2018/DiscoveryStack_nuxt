@@ -14,6 +14,8 @@ import { canonicalizeManagedDomain } from './domain-connectors'
 import { inspectManagedSitePreviewGates, runManagedSitePreviewGates } from './gates'
 import { getManagedSiteLiveConnectorRepository } from './repository'
 import { assertManagedSiteProductionPayment } from './production-payment-authority'
+import { assertStudioFunctionalDelivery } from './studio-delivery-check'
+import type { ManagedSiteBlueprintV1 } from './types'
 import { assertManagedSiteProviderAuthorityFingerprint, managedSiteProviderAuthorityMetadata, resolveManagedSiteCredential, resolveManagedSiteProviderAuthority } from './provider-registry'
 import type {
   ManagedSiteConnectorExecutionMode,
@@ -244,6 +246,8 @@ export async function deployManagedSiteProduction(ownerUserId: number, input: { 
   const providerAuthority = await deploymentProvider(ownerUserId, input.executionMode, repository, resolver)
   const candidate = await repository.findGenerationCandidate(ownerUserId, release.generationCandidateId)
   const receipts = await repository.listReceipts(ownerUserId, release.projectId)
+  const admittedBlueprint = (candidate?.manifest as { blueprint?: ManagedSiteBlueprintV1 } | null)?.blueprint
+  if (admittedBlueprint) assertStudioFunctionalDelivery(admittedBlueprint)
   const preview = receipts.find(receipt => receipt.releaseId === release.id && receipt.receiptType === 'preview_build_verified' && receipt.contentHash === release.contentHash && receipt.receiptStatus === 'verified')
   const approval = receipts.find(receipt => receipt.releaseId === release.id && receipt.receiptType === 'owner_preview_approved' && receipt.requestFingerprint === release.approvalFingerprint && receipt.receiptStatus === 'verified')
   const payment = receipts.find(receipt => receipt.releaseId === release.id && receipt.receiptType === 'release_payment_bound' && receipt.receiptStatus === 'verified')

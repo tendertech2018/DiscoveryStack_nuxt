@@ -28,7 +28,7 @@ export function funnelPreviewInput(answers: FunnelAnswers, sessionId: number): S
   const previewContext = answers.previewDraft?.headline ? `草稿主標題：${answers.previewDraft.headline}` : ''
   return {
     draftIdentity: `managed-site-funnel-${sessionId}`,
-    locale: 'zh-hant',
+    locale: company.language || 'zh-hant',
     brandName: company.brandName,
     audience,
     brief: [company.whatWeDo, `主要服務：${company.mainOffer}`, existingSiteContext, previewContext, style.stylePreset ? `風格偏好：${style.stylePreset}` : ''].filter(Boolean).join('\n'),

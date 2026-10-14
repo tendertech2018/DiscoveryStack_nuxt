@@ -4,6 +4,10 @@ type FunnelRequestFetch = <T = unknown>(path: string, options?: { method?: 'GET'
 const fetchFunnel = $fetch as unknown as FunnelRequestFetch
 import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
 import { type StudioBrief, type StudioPreview, type StudioPreviewRequest, type StudioSelection } from '../../../utils/managedSiteStudio'
+import type { StudioIntakeReply } from '../../../utils/managedSiteGuided'
+import type { LaunchSession, LaunchRequest } from '../../../utils/managedSiteLaunch'
+import { htmlSiteLanguage, siteTextDirection } from '../../../utils/managedSiteLanguage'
+import { journeyText } from '../../../utils/managedSiteJourneyCopy'
 import {
   CONVERSION_GOAL_OPTIONS,
   FEELING_OPTIONS,
@@ -24,12 +28,6 @@ import {
   type FunnelAnswersView,
 } from '../../../utils/managedSiteFunnel'
 
-useHead({
-  title: '建立你的品牌網站｜DiscoveryStack',
-  htmlAttrs: { lang: 'zh-Hant' },
-  meta: [{ name: 'robots', content: 'noindex, nofollow, noarchive' }],
-})
-
 type PriceCatalog = {
   version: string
   currency: 'TWD'
@@ -47,7 +45,8 @@ type DomainAvailability = { available: true; canonicalDomain: string; quoteFinge
 type DomainRegistrant = { firstName: string; lastName: string; organization: string; address1: string; city: string; state: string; postalCode: string; country: string; phoneCountryCode: string; phone: string; email: string }
 
 type SessionProjection = {
-  studio?: null | { confirmed: boolean; hasProposal: boolean; proposalId: string | null }
+  conversationLanguage?: string
+  studio?: null | { confirmed: boolean; hasProposal: boolean; proposalId: string | null; buildStarted?: boolean }
   status: string
   currentStep: number
   answers: FunnelAnswersView
@@ -171,6 +170,20 @@ const answers = ref<WizardAnswers>(initialAnswers())
 const showDesignStudio = ref(true)
 const studioDraft = ref<StudioSelection | null>(null)
 const studioGenerating = ref(false)
+const studioIntakeRequests = ref(0)
+const studioLanguage = ref('en')
+const customerLanguage = computed(() => studioLanguage.value)
+const compactLaunch = computed(() => Boolean(sessionProjection.value?.studio?.confirmed && !showDesignStudio.value))
+useHead(() => ({ title: `${journeyText(customerLanguage.value, 'launch')} | DiscoveryStack`, htmlAttrs: { lang: htmlSiteLanguage(customerLanguage.value), dir: siteTextDirection(customerLanguage.value) }, meta: [{ name: 'robots', content: 'noindex, nofollow, noarchive' }] }))
+const launchRequest: LaunchRequest = (path, options) => funnelFetch(path, options)
+function acceptLaunchSession(projection: LaunchSession) {
+  if (!sessionProjection.value) return
+  if (projection.conversationLanguage) studioLanguage.value = projection.conversationLanguage
+  sessionProjection.value = { ...sessionProjection.value, ...projection }
+  const defaults = initialAnswers()
+  answers.value = { ...defaults, ...projection.answers, company: { ...defaults.company, ...projection.answers.company }, contact: { ...defaults.contact, ...projection.answers.contact }, style: { ...defaults.style, ...projection.answers.style } }
+  builtPreviewUrl.value = projection.previewUrl || ''
+}
 const confirmedStudioSelection = computed(() => {
   const saved = sessionProjection.value
   const preset = saved?.answers.style?.customerSitePreset
@@ -178,7 +191,7 @@ const confirmedStudioSelection = computed(() => {
     ? { proposalId: saved.studio.proposalId, preset }
     : null
 })
-const studioInitial = computed<Partial<StudioBrief>>(() => !answers.value.company.brandName && studioDraft.value ? studioDraft.value.brief : ({
+const studioInitial = computed<Partial<StudioBrief>>(() => studioDraft.value && (!answers.value.company.brandName || studioDraft.value.brief.brandName === answers.value.company.brandName && studioDraft.value.brief.brief === answers.value.company.whatWeDo) ? studioDraft.value.brief : ({
   brandName: answers.value.company.brandName,
   brief: answers.value.company.whatWeDo,
   siteType: answers.value.siteType || 'brand_blog',
@@ -211,7 +224,7 @@ const COMPANY_COMPLETION_ITEMS = [
 const companyMissing = computed(() => stepCompletion(2, answers.value, { accepted: consentAccepted.value }).missing)
 const companyCompleteCount = computed(() => COMPANY_COMPLETION_ITEMS.filter(item => !companyMissing.value.includes(item.missingLabel)).length)
 const nextDisabled = computed(() => saveStatus.value === 'saving' || (currentStep.value === 7 && (!domainReady.value || domainChecking.value)) || !canAdvance(currentStep.value, answers.value, { accepted: currentStep.value === 7 ? consentGate.value.canSubmit : consentAccepted.value }))
-const navigationBusy = computed(() => studioGenerating.value || saveStatus.value === 'saving' || buildStatus.value === 'loading' || checkoutStatus.value === 'loading')
+const navigationBusy = computed(() => studioGenerating.value || studioIntakeRequests.value > 0 || saveStatus.value === 'saving' || buildStatus.value === 'loading' || checkoutStatus.value === 'loading')
 const designerTier = computed(() => catalog.value?.designTiers.find(item => item.key === 'designer'))
 const hasManualSetupModules = computed(() => Boolean(quote.value?.manualSetupModules.length))
 const contactModuleSelected = computed(() => (answers.value.modules || []).includes('contact_lead_capture'))
@@ -255,6 +268,7 @@ async function loadFunnelStatus(): Promise<void> {
 }
 
 function restoreProjection(projection: SessionProjection) {
+  if (projection.conversationLanguage) studioLanguage.value = projection.conversationLanguage
   const defaults = initialAnswers()
   answers.value = {
     ...defaults,
@@ -363,7 +377,7 @@ async function bootstrap() {
 
 async function restart() {
   if (navigationBusy.value) return
-  if (!window.confirm('要清除目前進度並重新開始嗎？')) return
+  if (!window.confirm(journeyText(customerLanguage.value, 'restartAsk'))) return
   loading.value = true
   bootstrapError.value = ''
   try {
@@ -386,6 +400,32 @@ async function requestStudioPreview(input: StudioPreviewRequest): Promise<Studio
   finally { studioGenerating.value = false }
 }
 
+async function requestStudioDesign(proposalId: string, design: Record<string, unknown>): Promise<StudioPreview> {
+  studioGenerating.value = true
+  try { return await funnelFetch<StudioPreview>('/studio-design', { method: 'POST', body: { proposalId, design } }) }
+  finally { studioGenerating.value = false }
+}
+
+async function requestStudioIntake(method: 'GET' | 'POST', body?: Record<string, unknown>) {
+  studioIntakeRequests.value++
+  try {
+    const reply = await funnelFetch<StudioIntakeReply>('/studio-intake', { method, ...(body ? { body } : {}) })
+    if (reply.revision > 0) studioLanguage.value = reply.language
+    return reply
+  }
+  finally { studioIntakeRequests.value-- }
+}
+async function saveStudioMedia(body: Record<string, unknown>) {
+  studioIntakeRequests.value++
+  try { return await funnelFetch<StudioIntakeReply>('/studio-media', { method: 'POST', body }) }
+  finally { studioIntakeRequests.value-- }
+}
+async function analyseStudioReference(url: string, revision: number) {
+  studioIntakeRequests.value++
+  try { return await funnelFetch<StudioIntakeReply>('/studio-reference', { method: 'POST', body: { url, revision } }) }
+  finally { studioIntakeRequests.value-- }
+}
+
 async function restoreSavedStudio() {
   studioDraft.value = await funnelFetch<StudioSelection | null>('/studio-draft', { method: 'GET' })
 }
@@ -405,7 +445,7 @@ async function openSavedStudio() {
 function openDetailedStudioFlow(brief: StudioBrief, cachedDraft?: StudioSelection) {
   if (navigationBusy.value) return
   studioDraft.value = cachedDraft || null
-  answers.value.company = { ...answers.value.company, brandName: brief.brandName, whatWeDo: brief.brief, mainOffer: answers.value.company.mainOffer || brief.brief.slice(0, 1000), conversionGoals: [brief.goal] }
+  answers.value.company = { ...answers.value.company, brandName: brief.brandName, whatWeDo: brief.brief, mainOffer: answers.value.company.mainOffer || brief.brief.slice(0, 1000), conversionGoals: [brief.goal], ...(brief.language ? { language: brief.language } : {}) }
   answers.value.siteType = brief.siteType
   showDesignStudio.value = false
   currentStep.value = 1
@@ -758,6 +798,7 @@ async function startCheckout() {
 }
 
 onMounted(() => {
+  studioLanguage.value = navigator.language || 'en'
   countdownTimer = setInterval(() => { countdownNow.value = Date.now() }, 1000)
   void bootstrap()
 })
@@ -765,16 +806,16 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
 </script>
 
 <template>
-  <main class="wizard" aria-labelledby="wizard-title">
+  <main class="wizard" :aria-labelledby="!showDesignStudio && !compactLaunch ? 'wizard-title' : undefined" :aria-label="showDesignStudio || compactLaunch ? 'DiscoveryStack Website Studio' : undefined">
     <nav class="studio-nav" aria-label="網站建立導覽">
       <span class="studio-nav__brand" aria-label="DiscoveryStack">
         <svg class="brand-mark" viewBox="0 0 24 28" fill="none" aria-hidden="true"><path d="M2 23V16H7V23H2ZM10 23V10H15V23H10ZM18 23V4H23V23H18Z" fill="currentColor" /></svg>
         <span>DiscoveryStack</span>
       </span>
       <span class="studio-nav__label">WEBSITE STUDIO</span>
-      <button type="button" class="text-button" :disabled="navigationBusy" @click="restart">重新開始 <span aria-hidden="true">↻</span></button>
+      <button type="button" class="text-button" :disabled="navigationBusy" @click="restart">{{ journeyText(customerLanguage, 'restart') }} <span aria-hidden="true">↻</span></button>
     </nav>
-    <header v-if="!showDesignStudio" class="wizard__header" :class="{ 'wizard__header--compact': currentStep > 1 }">
+    <header v-if="!showDesignStudio && !compactLaunch" class="wizard__header" :class="{ 'wizard__header--compact': currentStep > 1 }">
       <div class="wizard__intro">
         <p class="eyebrow">YOUR BRAND. A NEW BEGINNING.</p>
         <h1 id="wizard-title">你的品牌，<br>值得一個好網站。</h1>
@@ -803,7 +844,8 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
     </section>
 
     <template v-else-if="catalog && sessionProjection">
-      <ManagedSiteDesignStudio v-if="showDesignStudio" :initial="studioInitial" :draft="studioDraft" :confirmed="confirmedStudioSelection" :request-preview="requestStudioPreview" :saving="saveStatus === 'saving'" :save-error="saveStatus === 'error' ? saveMessage : ''" @continue="adoptStudioDesign" @detailed="openDetailedStudioFlow" />
+      <ManagedSiteDesignStudio v-if="showDesignStudio" :interface-language="customerLanguage" :initial="studioInitial" :draft="studioDraft" :confirmed="confirmedStudioSelection" :request-preview="requestStudioPreview" :request-design="requestStudioDesign" :request-intake="requestStudioIntake" :analyse-reference="analyseStudioReference" :save-media="saveStudioMedia" :saving="saveStatus === 'saving'" :save-error="saveStatus === 'error' ? saveMessage : ''" @continue="adoptStudioDesign" @detailed="openDetailedStudioFlow" />
+      <StudioLaunchPanel v-else-if="compactLaunch" :session="sessionProjection" :catalog="catalog" :request="launchRequest" :language="customerLanguage" :unactivated-modules="studioDraft?.preview.deliveryReview?.unactivatedModules || []" @saved="acceptLaunchSession" @back="openSavedStudio" />
       <template v-else>
       <button v-if="sessionProjection.status === 'active'" type="button" class="text-button" :disabled="navigationBusy" @click="openSavedStudio">← 返回網站提案工作室</button>
       <div class="wizard__workspace">

@@ -24,6 +24,8 @@ import { assertFunnelStripeCheckoutMode, assertFunnelStripeCredentialMode } from
 import { loadFunnelSession, type FunnelAnswers, type FunnelConsentSnapshot } from './session-service'
 import { funnelCatalogQuoteInput, funnelPreviewInput, projectFunnelQuote } from './quote-projection'
 import { assertFunnelDomainReadyForCheckout } from './domain-registration'
+import { assertStudioFunctionalDelivery } from '../live-connectors/studio-delivery-check'
+import type { ManagedSiteBlueprintV1 } from '../live-connectors/types'
 
 export type ManagedSiteFunnelOrchestratorDependencies = {
   funnelRepository?: FunnelSessionRepository
@@ -286,6 +288,14 @@ export async function runFunnelCheckout(sessionId: number, sessionToken: string,
   if (!preview || preview.accessTokenHash !== session.previewAccessTokenHash) conflict('The funnel preview authority no longer matches the built release.')
   const ownerUserId = await platformOwnerUserId(dependencies)
   if (order.ownerUserId !== ownerUserId) conflict('付款資料暫時無法讀取，請稍後再試。')
+  if (answers.studio?.confirmed) {
+    const builtRelease = await live.findRelease(ownerUserId, session.releaseId)
+    const candidate = builtRelease?.generationCandidateId ? await live.findGenerationCandidate(ownerUserId, builtRelease.generationCandidateId) : null
+    const blueprint = (candidate?.manifest as { blueprint?: ManagedSiteBlueprintV1 } | null)?.blueprint
+    if (!candidate || candidate.projectId !== session.projectId || candidate.contentHash !== builtRelease?.contentHash || !blueprint) conflict('The confirmed website artifact is not available for functional verification.')
+    // Stop before returning/replaying a checkout URL or resolving a paid provider.
+    assertStudioFunctionalDelivery(blueprint)
+  }
   const guardedProjectId = session.projectId || order.projectId
   if (guardedProjectId) await assertManagedSiteProjectNotSuspended(ownerUserId, guardedProjectId, managed)
   if (executionMode === 'live' && answers.domain?.option === 'new') await assertFunnelDomainReadyForCheckout(ownerUserId, session, { repository: live, clock })

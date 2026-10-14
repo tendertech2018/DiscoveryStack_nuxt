@@ -14,7 +14,7 @@ export type FunnelAnswersView = {
       scores: { overall: number; seo: number; geo: number; brandContent: number; ux: number }
     }
   }
-  company?: { brandName: string; whatWeDo: string; feelings: string[]; mainOffer: string; conversionGoals: string[] }
+  company?: { brandName: string; whatWeDo: string; feelings: string[]; mainOffer: string; conversionGoals: string[]; language?: string }
   contact?: { email: string; contactName: string; phone?: string }
   style?: { referenceUrls: string[]; stylePreset?: 'minimal' | 'business' | 'premium' | 'warm' | 'lively' | 'tech'; customerSitePreset?: 'atelier' | 'bloom' | 'alignment'; designTier: 'template' | 'designer' }
   siteType?: 'one_page' | 'brand_blog' | 'simple_commerce'
